@@ -35,7 +35,7 @@ _LOG_PREFIX = "[youtube_service]"
 
 _TOKEN_URI = "https://oauth2.googleapis.com/token"
 _SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
-_CATEGORY_PEOPLE_AND_BLOGS = "22"
+_CATEGORY_ENTERTAINMENT = "24"
 _ALLOWED_PRIVACY = ("private", "unlisted", "public")
 
 # Transient HTTP statuses worth retrying. 4xx (except 429) and permanent 5xx
@@ -202,7 +202,7 @@ def upload_short(
             "title": script.title,
             "description": _ensure_shorts_hashtag(script.description),
             "tags": list(script.tags),
-            "categoryId": _CATEGORY_PEOPLE_AND_BLOGS,
+            "categoryId": _CATEGORY_ENTERTAINMENT,
             # Mark the video's metadata + audio track as English (BCP-47).
             # Matches the script_service system prompt (English-only output)
             # and caption_service Whisper (language="en"). YouTube uses

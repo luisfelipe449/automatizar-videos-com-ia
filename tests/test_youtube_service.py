@@ -203,7 +203,7 @@ def test_happy_path_uploads_and_writes_record(monkeypatch, patched_env, video_fi
     body = kwargs["body"]
     assert body["snippet"]["title"] == "Test Short"
     assert "#Shorts" in body["snippet"]["description"]
-    assert body["snippet"]["categoryId"] == "22"
+    assert body["snippet"]["categoryId"] == "24"
     assert body["snippet"]["tags"] == ["test", "shorts"]
     assert body["status"]["privacyStatus"] == "private"
     assert body["status"]["selfDeclaredMadeForKids"] is False
