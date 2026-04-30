@@ -1,10 +1,12 @@
-"""Groq Llama chat → validated `Script` (Phase 3 of the pipeline).
+"""LLM → validated `Script` (Phase 3 of the pipeline).
 
-Single responsibility: take a user prompt, call Groq's chat.completions with
-JSON structured output, validate into a `Script`, and return it. Transient
-network/API failures are handled by `default_retry`; a Pydantic/JSON parse
-failure triggers exactly one regeneration attempt with a corrective system
-message before giving up.
+Single responsibility: take a user prompt, call an LLM provider with JSON
+structured output, validate into a `Script`, and return it. Provider is
+selectable via `LLM_PROVIDER` (`groq` default, or `bedrock` for Anthropic
+Claude on AWS Bedrock — useful when you want more creative scripts).
+Transient network/API failures are handled by `default_retry`; a
+Pydantic/JSON parse failure triggers exactly one regeneration attempt with a
+corrective system message before giving up.
 """
 
 from __future__ import annotations
@@ -15,7 +17,8 @@ from pathlib import Path
 from groq import Groq
 from pydantic import ValidationError
 
-from app.config import GROQ_MODEL, require
+from app import config
+from app.config import BEDROCK_MODEL, GROQ_MODEL, require
 from app.models import Script
 from app.utils import filepaths
 from app.utils.retries import default_retry
@@ -77,23 +80,93 @@ class ScriptGenerationError(RuntimeError):
     """Script generation failed after the validation retry."""
 
 
-@default_retry
-def _call_groq(client: Groq, messages: list[dict]) -> str:
-    """Invoke Groq chat completions and return the raw JSON string content.
+# Shared budget for all providers. 9-13 scenes × (scene_text + cinematic
+# image_prompt) + narration + tags/title/description fits comfortably in 4096.
+_MAX_TOKENS = 4096
+_TEMPERATURE = 0.9  # bumped from 0.7 — "more creative scripts" was the trigger.
 
-    Wrapped in `default_retry` so transient HTTP/5xx errors are retried with
-    backoff. Deterministic failures (e.g. 400 bad request) propagate as-is.
-    """
+
+@default_retry
+def _call_groq(client, messages: list[dict]) -> str:
+    """Invoke Groq chat completions and return the raw JSON string content."""
     response = client.chat.completions.create(
         model=GROQ_MODEL,
         response_format={"type": "json_object"},
         messages=messages,
-        temperature=0.7,
-        # 9-13 scenes × (scene_text + cinematic image_prompt) + narration
-        # + tags/title/description: comfortably inside 4096.
-        max_tokens=4096,
+        temperature=_TEMPERATURE,
+        max_tokens=_MAX_TOKENS,
     )
     return response.choices[0].message.content or ""
+
+
+@default_retry
+def _call_bedrock(client, messages: list[dict]) -> str:
+    """Invoke Anthropic Claude on AWS Bedrock and return the raw text content.
+
+    Anthropic's API takes `system` as a top-level parameter, not a chat turn,
+    so we extract the system messages from `messages` and merge them.
+    """
+    system_parts = [m["content"] for m in messages if m["role"] == "system"]
+    user_turns = [m for m in messages if m["role"] != "system"]
+    # Claude won't accept an empty messages list; defensive fallback.
+    if not user_turns:
+        user_turns = [{"role": "user", "content": "Generate the Short now."}]
+
+    response = client.messages.create(
+        model=BEDROCK_MODEL,
+        system="\n\n".join(system_parts),
+        messages=user_turns,
+        max_tokens=_MAX_TOKENS,
+        temperature=_TEMPERATURE,
+    )
+    # Claude responses are a list of content blocks; we want the text ones.
+    parts = [b.text for b in response.content if getattr(b, "type", "") == "text"]
+    return "".join(parts)
+
+
+def _build_client():
+    """Construct the provider-specific SDK client once per generate_script call."""
+    provider = config.LLM_PROVIDER
+    if provider == "groq":
+        return "groq", Groq(api_key=require("GROQ_API_KEY"))
+    if provider == "bedrock":
+        from anthropic import AnthropicBedrock
+
+        # Bedrock SDK reads AWS_BEARER_TOKEN_BEDROCK from env automatically;
+        # we require() here so the error is a clear MissingEnvVar if absent.
+        require("AWS_BEARER_TOKEN_BEDROCK")
+        return "bedrock", AnthropicBedrock(aws_region=config.AWS_REGION)
+    raise ScriptGenerationError(
+        f"Unknown LLM_PROVIDER={provider!r}. Set LLM_PROVIDER=groq or bedrock."
+    )
+
+
+def _call_llm(provider: str, client, messages: list[dict]) -> str:
+    """Dispatch to the right provider call using a pre-built client."""
+    if provider == "groq":
+        return _call_groq(client, messages)
+    if provider == "bedrock":
+        return _call_bedrock(client, messages)
+    raise ScriptGenerationError(f"Unknown provider={provider!r}")
+
+
+def _strip_code_fences(text: str) -> str:
+    """Return the inner JSON when the model wraps it in ```json fences.
+
+    Claude on Bedrock sometimes adds ```json ... ``` even when asked not to.
+    Groq's `response_format=json_object` prevents this, so this is a no-op
+    for Groq output.
+    """
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+    # Drop the opening fence line and the closing fence.
+    lines = stripped.splitlines()
+    if lines and lines[0].startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines)
 
 
 def _parse_and_validate(raw_json: str, job_id: str) -> Script:
@@ -101,7 +174,7 @@ def _parse_and_validate(raw_json: str, job_id: str) -> Script:
 
     Raises `json.JSONDecodeError` or `pydantic.ValidationError` on failure.
     """
-    payload = json.loads(raw_json)
+    payload = json.loads(_strip_code_fences(raw_json))
     if not isinstance(payload, dict):
         # Treat non-object JSON as a parse failure so the retry path kicks in.
         raise json.JSONDecodeError(
@@ -128,7 +201,8 @@ def generate_script(prompt: str, *, job_id: str | None = None) -> Script:
     Raises `ScriptGenerationError` on unrecoverable failure.
     """
     resolved_job_id = job_id or filepaths.make_job_id(prompt)
-    client = Groq(api_key=require("GROQ_API_KEY"))
+    provider, client = _build_client()
+    print(f"{_LOG_PREFIX} provider={provider}")
 
     base_messages: list[dict] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
@@ -138,7 +212,7 @@ def generate_script(prompt: str, *, job_id: str | None = None) -> Script:
     # Attempt 1 — pristine prompt.
     first_error: Exception | None = None
     try:
-        raw = _call_groq(client, base_messages)
+        raw = _call_llm(provider, client, base_messages)
         script = _parse_and_validate(raw, resolved_job_id)
         _persist(script)
         return script
@@ -158,7 +232,7 @@ def generate_script(prompt: str, *, job_id: str | None = None) -> Script:
         }
     ]
     try:
-        raw = _call_groq(client, retry_messages)
+        raw = _call_llm(provider, client, retry_messages)
         script = _parse_and_validate(raw, resolved_job_id)
         _persist(script)
         return script

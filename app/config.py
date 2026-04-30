@@ -36,9 +36,20 @@ YOUTUBE_CLIENT_SECRET: str = os.getenv("YOUTUBE_CLIENT_SECRET", "")
 YOUTUBE_REFRESH_TOKEN: str = os.getenv("YOUTUBE_REFRESH_TOKEN", "")
 
 # -----------------------------------------------------------------------------
-# Model names (overridable via env, defaults per PLANO.md).
+# LLM provider selection for script generation.
+# -----------------------------------------------------------------------------
+# One of: "groq" | "bedrock". Default = groq (free tier, Llama 3.3).
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq").strip().lower()
+
+# -----------------------------------------------------------------------------
+# Model names (overridable via env).
 # -----------------------------------------------------------------------------
 GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Bedrock uses inference profile IDs; us-east-1 requires the "us." prefix.
+BEDROCK_MODEL: str = os.getenv(
+    "BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+)
+AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
 GEMINI_TTS_MODEL: str = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
 GEMINI_IMAGE_MODEL: str = os.getenv("GEMINI_IMAGE_MODEL", "imagen-4.0-generate-001")
 

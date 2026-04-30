@@ -1,6 +1,10 @@
 # LLM + Speech (Groq: Llama 3.3 for scripts, Whisper for captions)
 groq~=0.11
 
+# Optional alternate script LLM — Anthropic Claude via AWS Bedrock.
+# Only used when LLM_PROVIDER=bedrock. The [bedrock] extra pulls in boto3/botocore.
+anthropic[bedrock]>=0.97
+
 # Gemini (TTS primary; Imagen optional fallback for visuals)
 google-genai~=0.3
 

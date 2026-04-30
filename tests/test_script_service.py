@@ -88,8 +88,13 @@ _OVERLONG_PAYLOAD = {
 
 @pytest.fixture
 def patched_env(monkeypatch, tmp_path: Path):
-    """Fake API key + redirected generated dir so tests stay hermetic."""
+    """Fake API key + redirected generated dir so tests stay hermetic.
+
+    Also pins the provider to 'groq' so the test suite doesn't depend on
+    whatever the developer has in their local .env.
+    """
     monkeypatch.setenv("GROQ_API_KEY", "fake-key")
+    monkeypatch.setattr("app.services.script_service.config.LLM_PROVIDER", "groq")
     generated = tmp_path / "generated"
     rendered = tmp_path / "rendered"
     # filepaths imports GENERATED_DIR / RENDERED_DIR at module load → patch there.
