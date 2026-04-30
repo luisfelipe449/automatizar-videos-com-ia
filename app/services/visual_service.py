@@ -10,6 +10,7 @@ AND `GEMINI_API_KEY` is set.
 from __future__ import annotations
 
 import hashlib
+import io
 import os
 import re
 from pathlib import Path
@@ -18,6 +19,7 @@ from urllib.parse import quote
 import requests
 from google import genai
 from google.genai import types
+from PIL import Image
 
 from app.config import GEMINI_IMAGE_MODEL, TARGET_HEIGHT, TARGET_WIDTH
 from app.models import Script
@@ -26,10 +28,13 @@ from app.utils.retries import default_retry, network_retry
 
 _LOG_PREFIX = "[visual_service]"
 
-# PNG magic number — used as a last-line sanity check on provider output.
+# Magic numbers for format sniffing. Pollinations may serve JPEG even when we
+# ask for a PNG-named artifact, so we detect both and transcode to PNG below.
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
-# Anything smaller than this is definitely corrupt (header + IHDR ≈ 70 bytes).
-_MIN_PNG_BYTES = 1000
+_JPEG_MAGIC = b"\xff\xd8\xff"
+# Anything smaller is definitely corrupt (PNG header + IHDR ≈ 70 bytes; JPEG
+# SOI + SOF markers similar). 1KB is still generous for 1080x1920 content.
+_MIN_IMAGE_BYTES = 1000
 
 _POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"
 _POLLINATIONS_TIMEOUT_S = 60
@@ -75,24 +80,44 @@ def _deterministic_seed(image_prompt: str) -> int:
     return int(digest[:8], 16)
 
 
-def _is_valid_png_bytes(data: bytes) -> bool:
-    """True iff `data` is large enough AND starts with the PNG magic number."""
-    return len(data) >= _MIN_PNG_BYTES and data.startswith(_PNG_MAGIC)
+def _looks_like_image(data: bytes) -> bool:
+    """True iff `data` is large enough AND starts with a known image magic."""
+    if len(data) < _MIN_IMAGE_BYTES:
+        return False
+    return data.startswith(_PNG_MAGIC) or data.startswith(_JPEG_MAGIC)
+
+
+def _to_png_bytes(data: bytes) -> bytes:
+    """Return `data` as PNG bytes. Transcodes JPEG via Pillow when needed."""
+    if data.startswith(_PNG_MAGIC):
+        return data
+    # JPEG (or anything Pillow can decode) → re-encode as PNG so the on-disk
+    # artifact always matches its `.png` extension and downstream ffmpeg input.
+    with Image.open(io.BytesIO(data)) as img:
+        img = img.convert("RGB")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
 
 
 def _write_png_safe(data: bytes, out_path: Path) -> None:
-    """Validate `data` looks like a real PNG, then write it atomically-ish.
+    """Validate `data` decodes as an image, transcode to PNG, write atomically.
 
     Writes to a `.part` sibling first and renames over the target, so a crashed
     write never leaves a half-file that the cache would later consider "fresh".
     """
-    if not _is_valid_png_bytes(data):
+    if not _looks_like_image(data):
         raise VisualGenerationError(
-            f"provider returned {len(data)} bytes without a valid PNG header"
+            f"provider returned {len(data)} bytes without a valid image header"
         )
+    try:
+        png_bytes = _to_png_bytes(data)
+    except Exception as exc:  # noqa: BLE001 — any Pillow decode failure surfaces uniformly
+        raise VisualGenerationError(f"could not transcode provider bytes to PNG: {exc}") from exc
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = out_path.with_suffix(out_path.suffix + ".part")
-    tmp.write_bytes(data)
+    tmp.write_bytes(png_bytes)
     tmp.replace(out_path)
 
 

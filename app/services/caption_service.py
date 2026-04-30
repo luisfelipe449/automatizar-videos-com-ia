@@ -125,15 +125,28 @@ def _call_whisper(client: Groq, narration_wav: Path) -> object:
 
 
 def _extract_words(transcription: object) -> list[dict]:
-    """Normalize the Groq Transcription object into a plain list of dicts."""
-    raw_words = getattr(transcription, "words", None) or []
+    """Normalize the Groq Transcription into a plain list of dicts.
+
+    The SDK has shipped `.words` as both object attributes and plain dicts
+    across versions, so we handle both shapes.
+    """
+    raw_words = getattr(transcription, "words", None)
+    if raw_words is None and isinstance(transcription, dict):
+        raw_words = transcription.get("words")
+    raw_words = raw_words or []
+
+    def _pick(item: object, key: str, default):
+        if isinstance(item, dict):
+            return item.get(key, default)
+        return getattr(item, key, default)
+
     words: list[dict] = []
     for w in raw_words:
         words.append(
             {
-                "word": getattr(w, "word", "") or "",
-                "start": float(getattr(w, "start", 0.0) or 0.0),
-                "end": float(getattr(w, "end", 0.0) or 0.0),
+                "word": _pick(w, "word", "") or "",
+                "start": float(_pick(w, "start", 0.0) or 0.0),
+                "end": float(_pick(w, "end", 0.0) or 0.0),
             }
         )
     return words
