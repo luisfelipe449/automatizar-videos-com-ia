@@ -82,7 +82,7 @@ def mocked_services(monkeypatch, redirected_dirs: Path):
         cache.write_hash_file(filepaths.narration_hash_path(job_id), cache.hash_text(narration))
         return wav
 
-    def fake_transcribe_to_srt(
+    def fake_transcribe(
         narration_wav: Path,
         job_id: str,
         *,
@@ -91,12 +91,16 @@ def mocked_services(monkeypatch, redirected_dirs: Path):
     ) -> Path:
         calls["captions"] += 1
         filepaths.ensure_job_dirs(job_id)
-        srt = filepaths.captions_path(job_id)
-        srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n", encoding="utf-8")
+        ass = filepaths.captions_path(job_id)
+        ass.write_text(
+            "[Script Info]\nScriptType: v4.00+\n\n[Events]\n"
+            "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\k100}hi\n",
+            encoding="utf-8",
+        )
         # Mirror the real service: persist the hash so the next run cache-hits.
         if narration_hash is not None:
             cache.write_hash_file(filepaths.captions_hash_path(job_id), narration_hash)
-        return srt
+        return ass
 
     def fake_generate_all_scene_images(script: Script) -> list[Path]:
         calls["visuals"] += 1
@@ -128,7 +132,7 @@ def mocked_services(monkeypatch, redirected_dirs: Path):
 
     monkeypatch.setattr(orchestrator, "generate_script", fake_generate_script)
     monkeypatch.setattr(orchestrator, "synthesize_narration", fake_synthesize_narration)
-    monkeypatch.setattr(orchestrator, "transcribe_to_srt", fake_transcribe_to_srt)
+    monkeypatch.setattr(orchestrator, "transcribe", fake_transcribe)
     monkeypatch.setattr(orchestrator, "generate_all_scene_images", fake_generate_all_scene_images)
     monkeypatch.setattr(orchestrator, "render_short", fake_render_short)
     monkeypatch.setattr(orchestrator, "upload_short", fake_upload_short)
@@ -249,7 +253,7 @@ def test_job_id_override_places_artifacts_under_custom_dir(
     rendered = redirected_dirs / "rendered" / "custom-id"
     assert (generated / "script.json").exists()
     assert (generated / "narration.wav").exists()
-    assert (generated / "captions.srt").exists()
+    assert (generated / "captions.ass").exists()
     assert (generated / "status.json").exists()
     assert (rendered / "final.mp4").exists()
 

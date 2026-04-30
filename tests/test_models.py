@@ -89,7 +89,7 @@ def test_render_spec_mismatched_image_paths_rejected():
             scenes=scenes,
             image_paths=[Path("scene_01.png")],  # only 1, need 2
             narration_path=Path("narration.wav"),
-            captions_path=Path("captions.srt"),
+            captions_path=Path("captions.ass"),
             output_path=Path("final.mp4"),
         )
 

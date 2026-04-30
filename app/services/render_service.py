@@ -1,8 +1,8 @@
-"""Compose scene images + narration + SRT into a 9:16 Short (Phase 7).
+"""Compose scene images + narration + ASS captions into a 9:16 Short (Phase 7).
 
 Single responsibility: build one `filter_complex` graph and invoke FFmpeg once.
-Ken Burns zoom on every scene, hard cuts between scenes, SRT burnt in via
-`libass`. No transitions, no music bed — that's future scope.
+Ken Burns zoom on every scene, hard cuts between scenes, ASS karaoke captions
+burnt in via `libass`. No transitions, no music bed -- that's future scope.
 
 The filter-graph builder (`_build_ffmpeg_command`) is pure and side-effect-free
 so it can be snapshot-tested without touching ffmpeg.
@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from app.config import ASSETS_DIR
 from app.models import RenderSpec
 from app.utils.ffmpeg_helpers import (
     FFmpegError,
@@ -27,13 +28,14 @@ _LOG_PREFIX = "[render_service]"
 # each scene's duration_seconds by this value when building the graph.
 _FPS = 30
 
-# Ken Burns: zoom from 1.0 → 1.2 over the scene. 0.0015 per frame at 30 fps
-# reaches ~1.2× in ~4.4s, so short scenes get a subtle nudge and long scenes
-# cap out at 1.2× (the `min(...)` clamp).
+# Ken Burns: zoom from 1.0 -> 1.2 over the scene. 0.0015 per frame at 30 fps
+# reaches ~1.2x in ~4.4s, so short scenes get a subtle nudge and long scenes
+# cap out at 1.2x (the `min(...)` clamp).
 _ZOOM_EXPR = "min(1.0+0.0015*on,1.2)"
 
-# Burnt-in subtitle look. Matches the PLANO.md spec.
-_SUBTITLE_STYLE = "Fontsize=14,Alignment=2,MarginV=200,Outline=2"
+# Directory holding bundled fonts (e.g. Bebas Neue). Passed to libass via
+# `fontsdir=` so we don't need to install fonts system-wide on Windows.
+_FONTS_DIR: Path = ASSETS_DIR / "fonts"
 
 _MAX_DURATION_S = 60.0
 
@@ -57,7 +59,7 @@ def _escape_subtitle_path(p: Path) -> str:
     The returned string does NOT include the outer single quotes — the caller
     wraps it in quotes when embedding in filter_complex.
     """
-    # Use absolute, forward-slash form: "C:/Users/.../captions.srt".
+    # Use absolute, forward-slash form: "C:/Users/.../captions.ass".
     posix = Path(p).resolve().as_posix()
     # Escape the drive-letter colon for the filter parser: "C\:/Users/..."
     # Only the first colon matters on Windows; POSIX paths have no colon.
@@ -96,10 +98,14 @@ def _build_filter_graph(spec: RenderSpec, durations: list[float] | None = None) 
         concat_inputs += f"[v{idx}]"
 
     sub_path = _escape_subtitle_path(spec.captions_path)
+    fonts_dir = _escape_subtitle_path(_FONTS_DIR)
     # Subtitles go AFTER concat so they render over the final timeline.
+    # No `force_style=` here: the .ass file already carries its own Style
+    # block (including the karaoke-colored PrimaryColour / SecondaryColour).
+    # force_style would override them and kill the yellow/white highlight.
     concat_and_subs = (
         f"{concat_inputs}concat=n={len(spec.scenes)}:v=1:a=0,"
-        f"subtitles='{sub_path}':force_style='{_SUBTITLE_STYLE}'"
+        f"subtitles='{sub_path}':fontsdir='{fonts_dir}'"
         f"[v]"
     )
 

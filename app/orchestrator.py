@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, TypeVar
 
 from app.models import RenderSpec, Script
-from app.services.caption_service import transcribe_to_srt
+from app.services.caption_service import transcribe
 from app.services.render_service import render_short
 from app.services.script_service import generate_script
 from app.services.tts_service import synthesize_narration
@@ -138,7 +138,7 @@ def _stage_tts(script: Script) -> Path:
 
 
 def _stage_captions(script: Script) -> Path:
-    return transcribe_to_srt(
+    return transcribe(
         filepaths.narration_path(script.job_id),
         script.job_id,
         narration_hash=cache.hash_text(script.narration),
@@ -175,9 +175,9 @@ def _tts_fresh(script: Script) -> Path | None:
 def _captions_fresh(script: Script) -> Path | None:
     """Captions are fresh iff the sibling hash matches `hash_text(narration)`.
 
-    Protects against stale SRTs left behind from a previous narration: if the
-    narration text changes, tts_service regenerates the WAV and the captions'
-    hash mismatches, forcing a retranscribe.
+    Protects against stale captions left behind from a previous narration: if
+    the narration text changes, tts_service regenerates the WAV and the
+    captions' hash mismatches, forcing a retranscribe.
     """
     cp = filepaths.captions_path(script.job_id)
     hp = filepaths.captions_hash_path(script.job_id)

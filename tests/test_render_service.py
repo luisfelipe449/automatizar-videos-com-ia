@@ -56,14 +56,18 @@ def _make_spec(
     ]
     image_paths = [tmp_path / f"scene_{i + 1:02d}.png" for i in range(n_scenes)]
     narration = tmp_path / "narration.wav"
-    captions = tmp_path / "captions.srt"
+    captions = tmp_path / "captions.ass"
     output = tmp_path / "rendered" / "final.mp4"
 
     if create_files:
         for p in image_paths:
             p.write_bytes(b"\x89PNG\r\n\x1a\n")  # PNG magic, enough for existence
         narration.write_bytes(b"RIFF")
-        captions.write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n", encoding="utf-8")
+        captions.write_text(
+            "[Script Info]\nScriptType: v4.00+\n\n[Events]\n"
+            "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\k100}hi\n",
+            encoding="utf-8",
+        )
         output.parent.mkdir(parents=True, exist_ok=True)
 
     return RenderSpec(
@@ -81,16 +85,16 @@ def _make_spec(
 # --------------------------------------------------------------------------- #
 
 def test_escape_subtitle_path_escapes_windows_drive_colon(tmp_path: Path):
-    srt = tmp_path / "captions.srt"
-    srt.write_text("x", encoding="utf-8")
-    escaped = _escape_subtitle_path(srt)
+    ass = tmp_path / "captions.ass"
+    ass.write_text("x", encoding="utf-8")
+    escaped = _escape_subtitle_path(ass)
 
     # No OS-native backslashes (the only legitimate backslash is the `\:`
     # drive-colon escape), and the filename uses forward slashes.
     assert "/" in escaped
     # At least one escaped colon is present on Windows (drive letter).
     # On POSIX the path has no colon so this assertion is skipped.
-    resolved = str(srt.resolve())
+    resolved = str(ass.resolve())
     if ":" in resolved:
         assert r"\:" in escaped
         # The bare unescaped "C:" form must not leak through.
@@ -121,10 +125,15 @@ def test_build_filter_graph_has_zoompan_concat_and_subtitles(tmp_path: Path):
 
     # Concat over every vN label.
     assert "[v0][v1][v2]concat=n=3:v=1:a=0" in graph
-    # Subtitles baked in after concat.
+    # Subtitles baked in after concat, referencing the .ass captions file.
     assert "subtitles=" in graph
-    assert "Fontsize=14" in graph
-    assert "MarginV=200" in graph
+    assert "captions.ass" in graph
+    # `fontsdir=` is passed so libass can find Bebas Neue without a system install.
+    assert "fontsdir=" in graph
+    assert "fonts" in graph  # path fragment for assets/fonts
+    # `force_style` must NOT appear: it would override the ASS file's own
+    # Style block and kill the karaoke PrimaryColour/SecondaryColour coloring.
+    assert "force_style" not in graph
     # Final label that -map "[v]" will reference.
     assert graph.rstrip().endswith("[v]")
 
@@ -283,10 +292,28 @@ def test_render_service_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         capture_output=True,
     )
 
-    # One SRT cue covering the whole 0-2s window.
-    captions = tmp_path / "captions.srt"
+    # Minimal ASS file with one karaoke cue spanning the whole 0-2s window.
+    captions = tmp_path / "captions.ass"
     captions.write_text(
-        "1\n00:00:00,000 --> 00:00:02,000\nhello smoke test\n",
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1080\n"
+        "PlayResY: 1920\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,Bebas Neue,56,&H0000D7FF,&H00FFFFFF,&H00000000,"
+        "&H00000000,0,0,0,0,100,100,0,0,1,3,1,2,60,60,300,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+        "Effect, Text\n"
+        "Dialogue: 0,0:00:00.00,0:00:02.00,Default,,0,0,0,,"
+        "{\\k100}hello {\\k100}smoke\n",
         encoding="utf-8",
         newline="\n",
     )

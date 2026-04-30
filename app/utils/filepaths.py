@@ -38,7 +38,9 @@ def narration_hash_path(job_id: str) -> Path:
 
 
 def captions_path(job_id: str) -> Path:
-    return job_dir(job_id) / "captions.srt"
+    # ASS (Advanced SubStation Alpha) so the render stage can burn in
+    # karaoke-style per-word highlighting (CapCut look) via libass.
+    return job_dir(job_id) / "captions.ass"
 
 
 def captions_hash_path(job_id: str) -> Path:

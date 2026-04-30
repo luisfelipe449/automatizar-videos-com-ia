@@ -68,7 +68,7 @@ O upload usa `YOUTUBE_PRIVACY_STATUS` do `.env` (default `private`). Só troque 
 |---|---|
 | `assets/generated/<job_id>/script.json` | Roteiro validado (Pydantic) |
 | `assets/generated/<job_id>/narration.wav` | Áudio TTS 24 kHz 16-bit mono |
-| `assets/generated/<job_id>/captions.srt` | Legendas sincronizadas (Whisper) |
+| `assets/generated/<job_id>/captions.ass` | Legendas ASS com karaokê por palavra (Whisper + libass) |
 | `assets/generated/<job_id>/scene_XX.png` | Imagem por cena (1080x1920) |
 | `assets/generated/<job_id>/*.hash` | Hash de entrada p/ cache idempotente |
 | `assets/generated/<job_id>/status.json` | Estado de cada etapa |
@@ -86,6 +86,10 @@ pytest -v                 # suíte completa (rápida, apenas unitários)
 pytest -v -m slow         # inclui smoke de render com FFmpeg real
 pytest -v -m "not slow"   # apenas unitários (explícito)
 ```
+
+## Legendas karaokê (CapCut look)
+
+As legendas são queimadas em formato **ASS** (`captions.ass`) com realce por palavra ao estilo CapCut: a palavra que está sendo falada aparece em amarelo (`#FFD700`), as palavras já faladas ficam brancas, contorno preto e sombra discreta para ler sobre qualquer fundo. A fonte é **Bebas Neue Regular**, carregada diretamente de `assets/fonts/BebasNeue-Regular.ttf` via `fontsdir=` do libass — não precisa instalar no sistema. Para trocar a fonte, basta substituir o `.ttf` em `assets/fonts/` e ajustar `_ASS_FONTNAME` em `app/services/caption_service.py` para o nome interno da nova fonte.
 
 ## Limites conhecidos
 

@@ -1,4 +1,4 @@
-"""Tests for `app.services.caption_service` — no real Groq API is ever contacted."""
+"""Tests for `app.services.caption_service` -- no real Groq API is ever contacted."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import pytest
 def _make_transcription(words: list[dict] | None):
     """Build a SimpleNamespace that mimics the Groq Transcription object.
 
-    `words=None` → Transcription object WITHOUT a `.words` attribute at all.
+    `words=None` -> Transcription object WITHOUT a `.words` attribute at all.
     """
     if words is None:
         return SimpleNamespace(text="whatever")
@@ -33,7 +33,7 @@ class _FakeTranscriptions:
         self._responses = list(responses)
         self.calls: list[dict] = []
 
-    def create(self, **kwargs):  # noqa: D401 — SDK-shaped signature
+    def create(self, **kwargs):  # noqa: D401 -- SDK-shaped signature
         self.calls.append(kwargs)
         if not self._responses:
             raise RuntimeError("FakeTranscriptions exhausted")
@@ -94,7 +94,7 @@ def _patch_no_backoff(monkeypatch):
 
 
 def _touch_wav(path: Path) -> Path:
-    """Create a tiny non-empty placeholder file; contents don't matter — the SDK is mocked."""
+    """Create a tiny non-empty placeholder file; contents don't matter -- the SDK is mocked."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"RIFF0000WAVEfake")
     return path
@@ -104,26 +104,32 @@ def _touch_wav(path: Path) -> Path:
 # Pure-helper unit tests (no mocks needed)
 # --------------------------------------------------------------------------- #
 
-def test_format_srt_time_zero():
-    from app.services.caption_service import _format_srt_time
+def test_format_ass_time_zero():
+    from app.services.caption_service import _format_ass_time
 
-    assert _format_srt_time(0.0) == "00:00:00,000"
-
-
-def test_format_srt_time_mixed_units():
-    from app.services.caption_service import _format_srt_time
-
-    # 1h 1m 1.456s
-    assert _format_srt_time(3661.456) == "01:01:01,456"
+    assert _format_ass_time(0.0) == "0:00:00.00"
 
 
-def test_format_srt_time_sub_second():
-    from app.services.caption_service import _format_srt_time
+def test_format_ass_time_mixed_units():
+    from app.services.caption_service import _format_ass_time
 
-    assert _format_srt_time(0.5) == "00:00:00,500"
+    # 1h 1m 1.456s -> 1:01:01.46 (centisecond rounding)
+    assert _format_ass_time(3661.456) == "1:01:01.46"
 
 
-def test_group_words_basic_chunking():
+def test_format_ass_time_sub_second():
+    from app.services.caption_service import _format_ass_time
+
+    assert _format_ass_time(0.5) == "0:00:00.50"
+
+
+def test_format_ass_time_clamps_negative():
+    from app.services.caption_service import _format_ass_time
+
+    assert _format_ass_time(-1.0) == "0:00:00.00"
+
+
+def test_group_words_basic_chunking_carries_word_list():
     from app.services.caption_service import _group_words
 
     words = [
@@ -134,8 +140,16 @@ def test_group_words_basic_chunking():
     cues = _group_words(words, chunk_size=2)
 
     assert len(cues) == 2
-    assert cues[0] == {"index": 1, "start": 0.0, "end": 0.6, "text": "a b"}
-    assert cues[1] == {"index": 2, "start": 0.6, "end": 0.9, "text": "c"}
+    # Cue 1: words a, b (both carried through with timings).
+    assert cues[0]["index"] == 1
+    assert cues[0]["start"] == 0.0
+    assert cues[0]["end"] == 0.6
+    assert [w["word"] for w in cues[0]["words"]] == ["a", "b"]
+    # Cue 2: word c.
+    assert cues[1]["index"] == 2
+    assert cues[1]["start"] == 0.6
+    assert cues[1]["end"] == 0.9
+    assert [w["word"] for w in cues[1]["words"]] == ["c"]
 
 
 def test_group_words_empty_input_yields_no_cues():
@@ -156,7 +170,7 @@ def test_group_words_skips_blank_word_tokens():
     cues = _group_words(words, chunk_size=6)
 
     assert len(cues) == 1
-    assert cues[0]["text"] == "hello world"
+    assert [w["word"] for w in cues[0]["words"]] == ["hello", "world"]
     assert cues[0]["start"] == 0.1
     assert cues[0]["end"] == 0.9
 
@@ -173,40 +187,109 @@ def test_group_words_bumps_non_positive_duration():
     assert cues[0]["end"] == pytest.approx(1.1)
 
 
-def test_render_srt_produces_spec_compliant_block():
-    from app.services.caption_service import _render_srt
+def test_build_dialogue_line_three_words_equal_timing():
+    from app.services.caption_service import _build_dialogue_line
 
-    out = _render_srt([{"index": 1, "start": 0.0, "end": 0.5, "text": "hi"}])
+    cue = {
+        "index": 1,
+        "start": 0.0,
+        "end": 1.2,
+        "words": [
+            {"word": "word1", "start": 0.0, "end": 0.4},
+            {"word": "word2", "start": 0.4, "end": 0.8},
+            {"word": "word3", "start": 0.8, "end": 1.2},
+        ],
+    }
+    line = _build_dialogue_line(cue)
 
-    # The exact block the spec asks us to verify.
-    assert "1\n00:00:00,000 --> 00:00:00,500\nhi\n" in out
-    # Should end with a trailing newline (SRT blocks are newline-terminated).
-    assert out.endswith("\n")
+    # Dialogue prefix + timestamps + default style + karaoke text.
+    assert line.startswith("Dialogue: 0,0:00:00.00,0:00:01.20,Default,,0,0,0,,")
+    assert r"{\k40}word1 {\k40}word2 {\k40}word3" in line
+
+
+def test_build_dialogue_line_zero_duration_clamps_to_one_cs():
+    from app.services.caption_service import _build_dialogue_line
+
+    cue = {
+        "index": 1,
+        "start": 0.0,
+        "end": 0.1,
+        "words": [{"word": "oi", "start": 0.0, "end": 0.0}],
+    }
+    line = _build_dialogue_line(cue)
+    # Minimum 1cs so a zero-length word still renders.
+    assert r"{\k1}oi" in line
+
+
+def test_build_dialogue_line_escapes_braces_and_backslash():
+    from app.services.caption_service import _build_dialogue_line
+
+    cue = {
+        "index": 1,
+        "start": 0.0,
+        "end": 0.5,
+        "words": [{"word": "a{b}\\c", "start": 0.0, "end": 0.5}],
+    }
+    line = _build_dialogue_line(cue)
+    # Curly braces get swapped for parens; backslashes get doubled.
+    assert "(b)" in line
+    assert "\\\\c" in line
+
+
+def test_render_ass_contains_required_sections_and_style():
+    from app.services.caption_service import _render_ass
+
+    cue = {
+        "index": 1,
+        "start": 0.0,
+        "end": 0.5,
+        "words": [{"word": "hi", "start": 0.0, "end": 0.5}],
+    }
+    out = _render_ass([cue])
+
+    # All three mandatory ASS sections present.
+    assert "[Script Info]" in out
+    assert "[V4+ Styles]" in out
+    assert "[Events]" in out
+    # Play resolution authored for 1080x1920 Shorts.
+    assert "PlayResX: 1080" in out
+    assert "PlayResY: 1920" in out
+    # Style line with Bebas Neue + the exact color constants.
+    assert "Style: Default,Bebas Neue," in out
+    assert "&H0000D7FF" in out  # yellow (PrimaryColour)
+    assert "&H00FFFFFF" in out  # white (SecondaryColour)
+    assert "&H00000000" in out  # black (outline + back)
+    # At least one Dialogue line with a karaoke tag.
+    assert "Dialogue:" in out
+    assert r"{\k" in out
     # No BOM, no CRLF.
     assert "\r" not in out
     assert not out.startswith("﻿")
 
 
-def test_render_srt_separates_multiple_cues_with_blank_line():
-    from app.services.caption_service import _render_srt
+def test_render_ass_emits_one_dialogue_per_cue():
+    from app.services.caption_service import _render_ass
 
-    out = _render_srt(
-        [
-            {"index": 1, "start": 0.0, "end": 0.5, "text": "one"},
-            {"index": 2, "start": 0.5, "end": 1.0, "text": "two"},
-        ]
-    )
-
-    # Mandatory blank line between cues in SRT format.
-    assert "one\n\n2\n" in out
+    cues = [
+        {
+            "index": 1, "start": 0.0, "end": 0.4,
+            "words": [{"word": "one", "start": 0.0, "end": 0.4}],
+        },
+        {
+            "index": 2, "start": 0.4, "end": 0.8,
+            "words": [{"word": "two", "start": 0.4, "end": 0.8}],
+        },
+    ]
+    out = _render_ass(cues)
+    assert out.count("Dialogue:") == 2
 
 
 # --------------------------------------------------------------------------- #
 # End-to-end tests (Groq client mocked)
 # --------------------------------------------------------------------------- #
 
-def test_happy_path_writes_valid_srt(monkeypatch, patched_env, tmp_path):
-    from app.services.caption_service import transcribe_to_srt
+def test_happy_path_writes_valid_ass(monkeypatch, patched_env, tmp_path):
+    from app.services.caption_service import transcribe
     from app.utils import filepaths
 
     wav = _touch_wav(tmp_path / "narration.wav")
@@ -217,20 +300,27 @@ def test_happy_path_writes_valid_srt(monkeypatch, patched_env, tmp_path):
     ]
     _install_fake_groq(monkeypatch, [_make_transcription(words)])
 
-    srt_path = transcribe_to_srt(wav, job_id="job-happy")
+    ass_path = transcribe(wav, job_id="job-happy")
 
-    assert srt_path == filepaths.captions_path("job-happy")
-    assert srt_path.exists()
+    assert ass_path == filepaths.captions_path("job-happy")
+    assert ass_path.suffix == ".ass"
+    assert ass_path.exists()
 
-    contents = srt_path.read_text(encoding="utf-8")
-    # Exactly 1 cue because 3 words ≤ default chunk_size=6.
-    assert "1\n" in contents
-    assert "2\n" not in contents.split("\n\n")[0]
-    # Text is the joined words.
-    assert "olá mundo feliz" in contents
-    # Timestamps came from the first/last word.
-    assert "00:00:00,000 --> 00:00:01,400" in contents
-    # One API call.
+    contents = ass_path.read_text(encoding="utf-8")
+    # Sections present.
+    assert "[Events]" in contents
+    # Exactly 1 Dialogue line because 3 words <= default chunk_size=6.
+    assert contents.count("Dialogue:") == 1
+    # The words are still visible as text (no escape mangling).
+    for w in ("olá", "mundo", "feliz"):
+        assert w in contents
+    # Karaoke tags appear.
+    assert r"{\k" in contents
+    # Cue timing covers 0 -> 1.4s (single-digit hour, cs format).
+    assert "0:00:00.00," in contents
+    assert ",0:00:01.40," in contents
+
+    # Exactly one Groq call with the right kwargs.
     assert len(FakeGroq.last_instance.calls) == 1
     call_kwargs = FakeGroq.last_instance.calls[0]
     assert call_kwargs["model"] == "whisper-large-v3"
@@ -241,42 +331,42 @@ def test_happy_path_writes_valid_srt(monkeypatch, patched_env, tmp_path):
 
 def test_empty_transcription_raises_caption_error(monkeypatch, patched_env, tmp_path):
     _patch_no_backoff(monkeypatch)
-    from app.services.caption_service import CaptionError, transcribe_to_srt
+    from app.services.caption_service import CaptionError, transcribe
 
     wav = _touch_wav(tmp_path / "narration.wav")
     # Transcription has a `.words` attribute, but it's empty.
     _install_fake_groq(monkeypatch, [_make_transcription([])])
 
     with pytest.raises(CaptionError, match="empty word list"):
-        transcribe_to_srt(wav, job_id="job-empty")
+        transcribe(wav, job_id="job-empty")
 
 
 def test_missing_words_attribute_raises_caption_error(monkeypatch, patched_env, tmp_path):
     _patch_no_backoff(monkeypatch)
-    from app.services.caption_service import CaptionError, transcribe_to_srt
+    from app.services.caption_service import CaptionError, transcribe
 
     wav = _touch_wav(tmp_path / "narration.wav")
-    # `words=None` → the fake Transcription has NO `.words` attribute at all.
+    # `words=None` -> the fake Transcription has NO `.words` attribute at all.
     _install_fake_groq(monkeypatch, [_make_transcription(None)])
 
     with pytest.raises(CaptionError, match="empty word list"):
-        transcribe_to_srt(wav, job_id="job-no-words")
+        transcribe(wav, job_id="job-no-words")
 
 
 def test_missing_wav_raises_caption_error(monkeypatch, patched_env, tmp_path):
-    from app.services.caption_service import CaptionError, transcribe_to_srt
+    from app.services.caption_service import CaptionError, transcribe
 
     missing = tmp_path / "does_not_exist.wav"
     # No SDK call should happen, but install a Fake anyway to be sure nothing hits real Groq.
     _install_fake_groq(monkeypatch, [])
 
     with pytest.raises(CaptionError, match="narration WAV not found"):
-        transcribe_to_srt(missing, job_id="job-missing")
+        transcribe(missing, job_id="job-missing")
 
 
 def test_transient_connection_error_is_retried(monkeypatch, patched_env, tmp_path):
     _patch_no_backoff(monkeypatch)
-    from app.services.caption_service import transcribe_to_srt
+    from app.services.caption_service import transcribe
 
     wav = _touch_wav(tmp_path / "narration.wav")
     words = [
@@ -289,17 +379,19 @@ def test_transient_connection_error_is_retried(monkeypatch, patched_env, tmp_pat
         [ConnectionError("temporary blip"), _make_transcription(words)],
     )
 
-    srt_path = transcribe_to_srt(wav, job_id="job-retry")
+    ass_path = transcribe(wav, job_id="job-retry")
 
-    assert srt_path.exists()
-    # First attempt failed, second succeeded → exactly 2 create() invocations.
+    assert ass_path.exists()
+    # First attempt failed, second succeeded -> exactly 2 create() invocations.
     assert len(FakeGroq.last_instance.calls) == 2
-    assert "oi tudo bem" in srt_path.read_text(encoding="utf-8")
+    contents = ass_path.read_text(encoding="utf-8")
+    for w in ("oi", "tudo", "bem"):
+        assert w in contents
 
 
 def test_caption_cache_hit_with_matching_hash(monkeypatch, patched_env, tmp_path):
-    """A pre-existing SRT + matching `captions.hash` must skip the Groq call."""
-    from app.services.caption_service import transcribe_to_srt
+    """A pre-existing ASS + matching `captions.hash` must skip the Groq call."""
+    from app.services.caption_service import transcribe
     from app.utils import cache, filepaths
 
     wav = _touch_wav(tmp_path / "narration.wav")
@@ -307,23 +399,27 @@ def test_caption_cache_hit_with_matching_hash(monkeypatch, patched_env, tmp_path
 
     # Pre-create the artifact + hash so the service sees a fresh cache.
     filepaths.ensure_job_dirs("job-cache-hit")
-    srt = filepaths.captions_path("job-cache-hit")
-    srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nolá\n", encoding="utf-8")
+    ass = filepaths.captions_path("job-cache-hit")
+    ass.write_text(
+        "[Script Info]\nScriptType: v4.00+\n\n[Events]\n"
+        "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,{\\k100}olá\n",
+        encoding="utf-8",
+    )
     cache.write_hash_file(filepaths.captions_hash_path("job-cache-hit"), narration_hash)
 
-    # Install an empty queue — any API call would blow up.
+    # Install an empty queue -- any API call would blow up.
     _install_fake_groq(monkeypatch, [])
 
-    returned = transcribe_to_srt(wav, job_id="job-cache-hit", narration_hash=narration_hash)
+    returned = transcribe(wav, job_id="job-cache-hit", narration_hash=narration_hash)
 
-    assert returned == srt
+    assert returned == ass
     # Zero Groq invocations thanks to the cache.
     assert FakeGroq.last_instance is None
 
 
 def test_caption_cache_miss_on_hash_change(monkeypatch, patched_env, tmp_path):
-    """A stale SRT whose hash no longer matches must trigger a fresh transcription."""
-    from app.services.caption_service import transcribe_to_srt
+    """A stale ASS whose hash no longer matches must trigger a fresh transcription."""
+    from app.services.caption_service import transcribe
     from app.utils import cache, filepaths
 
     wav = _touch_wav(tmp_path / "narration.wav")
@@ -331,8 +427,8 @@ def test_caption_cache_miss_on_hash_change(monkeypatch, patched_env, tmp_path):
     new_hash = cache.hash_text("brand new narration")
 
     filepaths.ensure_job_dirs("job-cache-miss")
-    srt = filepaths.captions_path("job-cache-miss")
-    srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nSTALE\n", encoding="utf-8")
+    ass = filepaths.captions_path("job-cache-miss")
+    ass.write_text("STALE-CONTENT", encoding="utf-8")
     cache.write_hash_file(filepaths.captions_hash_path("job-cache-miss"), old_hash)
 
     words = [
@@ -341,21 +437,22 @@ def test_caption_cache_miss_on_hash_change(monkeypatch, patched_env, tmp_path):
     ]
     _install_fake_groq(monkeypatch, [_make_transcription(words)])
 
-    returned = transcribe_to_srt(wav, job_id="job-cache-miss", narration_hash=new_hash)
+    returned = transcribe(wav, job_id="job-cache-miss", narration_hash=new_hash)
 
-    assert returned == srt
+    assert returned == ass
     # Groq WAS called because the narration hash changed.
     assert len(FakeGroq.last_instance.calls) == 1
     # The captions file was rewritten (no longer contains the stale marker).
-    contents = srt.read_text(encoding="utf-8")
-    assert "STALE" not in contents
-    assert "novo conteúdo" in contents
+    contents = ass.read_text(encoding="utf-8")
+    assert "STALE-CONTENT" not in contents
+    for w in ("novo", "conteúdo"):
+        assert w in contents
     # The hash file now stores the NEW hash.
     assert cache.read_hash_file(filepaths.captions_hash_path("job-cache-miss")) == new_hash
 
 
 def test_chunk_boundary_13_words_chunk_size_6(monkeypatch, patched_env, tmp_path):
-    from app.services.caption_service import transcribe_to_srt
+    from app.services.caption_service import transcribe
 
     wav = _touch_wav(tmp_path / "narration.wav")
     # 13 words with 0.1s duration each, 0.1s gap = start at 0.0, next at 0.2, ...
@@ -365,25 +462,11 @@ def test_chunk_boundary_13_words_chunk_size_6(monkeypatch, patched_env, tmp_path
         words.append({"word": f"w{i}", "start": start, "end": start + 0.1})
     _install_fake_groq(monkeypatch, [_make_transcription(words)])
 
-    srt_path = transcribe_to_srt(wav, job_id="job-13", words_per_chunk=6)
-    contents = srt_path.read_text(encoding="utf-8")
+    ass_path = transcribe(wav, job_id="job-13", words_per_chunk=6)
+    contents = ass_path.read_text(encoding="utf-8")
 
-    # 13 words at chunk_size=6 → 6 + 6 + 1 = 3 cues.
-    # Split on blank lines (SRT cue separator).
-    blocks = [b for b in contents.strip().split("\n\n") if b]
-    assert len(blocks) == 3
-
-    # Cue 1: w0..w5 (6 words).
-    cue1_text_line = blocks[0].split("\n")[2]
-    assert cue1_text_line.split(" ") == [f"w{i}" for i in range(6)]
-    # Cue 2: w6..w11 (6 words).
-    cue2_text_line = blocks[1].split("\n")[2]
-    assert cue2_text_line.split(" ") == [f"w{i}" for i in range(6, 12)]
-    # Cue 3: w12 (1 word).
-    cue3_text_line = blocks[2].split("\n")[2]
-    assert cue3_text_line.split(" ") == ["w12"]
-
-    # Indices are 1, 2, 3.
-    assert blocks[0].startswith("1\n")
-    assert blocks[1].startswith("2\n")
-    assert blocks[2].startswith("3\n")
+    # 13 words at chunk_size=6 -> 6 + 6 + 1 = 3 Dialogue lines.
+    assert contents.count("Dialogue:") == 3
+    # Every word is present.
+    for i in range(13):
+        assert f"w{i}" in contents
