@@ -8,7 +8,9 @@ Two flavours:
 
 from __future__ import annotations
 
+import math
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -24,6 +26,8 @@ from app.services.render_service import (
     _build_filter_graph,
     _escape_subtitle_path,
     _pick_music_track,
+    _scale_scene_durations,
+    _XFADE_DURATION,
     render_short,
 )
 
@@ -157,7 +161,7 @@ def test_pick_music_track_missing_dir_returns_none(
 # Unit: _build_filter_graph
 # --------------------------------------------------------------------------- #
 
-def test_build_filter_graph_has_zoompan_concat_and_subtitles(tmp_path: Path):
+def test_build_filter_graph_has_zoompan_xfade_and_subtitles(tmp_path: Path):
     spec = _make_spec(tmp_path, n_scenes=3, durations=[2, 3, 4])
     graph = _build_filter_graph(spec)
 
@@ -169,9 +173,13 @@ def test_build_filter_graph_has_zoompan_concat_and_subtitles(tmp_path: Path):
         assert f"d={frames}" in graph
         assert f"[v{idx}]" in graph
 
-    # Concat over every vN label.
-    assert "[v0][v1][v2]concat=n=3:v=1:a=0" in graph
-    # Subtitles baked in after concat, referencing the .ass captions file.
+    # No concat — we now crossfade with xfade instead.
+    assert "concat=n=" not in graph
+    # N-1 xfade entries for N scenes.
+    xfade_count = len(re.findall(r"xfade=transition=fade", graph))
+    assert xfade_count == 2, f"expected 2 xfades for 3 scenes, got {xfade_count}"
+    assert "duration=0.4" in graph
+    # Subtitles baked in after the xfade chain, referencing the .ass captions file.
     assert "subtitles=" in graph
     assert "captions.ass" in graph
     # `fontsdir=` is passed so libass can find Bebas Neue without a system install.
@@ -182,6 +190,73 @@ def test_build_filter_graph_has_zoompan_concat_and_subtitles(tmp_path: Path):
     assert "force_style" not in graph
     # Final label that -map "[v]" will reference.
     assert graph.rstrip().endswith("[v]")
+
+
+def test_xfade_offsets_accumulate(tmp_path: Path):
+    """The k-th xfade's offset = sum(dur[0..k]) - (k+1) * XFADE_DURATION."""
+    spec = _make_spec(tmp_path, n_scenes=3, durations=[2, 3, 4])
+    # Use pre-scaled durations directly so the math is unambiguous.
+    graph = _build_filter_graph(spec, durations=[2.0, 3.0, 4.0])
+
+    # Extract both offsets in order of appearance.
+    offsets = [float(m) for m in re.findall(r"offset=([0-9.]+)", graph)]
+    assert len(offsets) == 2, f"expected 2 offsets, got {offsets}"
+
+    # First xfade: between the result of scene 0 and scene 1. It should kick in
+    # 0.4s before scene 0 ends on the cumulative timeline: 2 - 0.4 = 1.6.
+    assert math.isclose(offsets[0], 2.0 - 0.4, abs_tol=1e-6)
+    # Second xfade: between (fade of 0+1) and scene 2. Cumulative 2+3=5, minus
+    # 2 * 0.4 = 0.8 worth of overlap already consumed: 4.2.
+    assert math.isclose(offsets[1], 2.0 + 3.0 - 2 * 0.4, abs_tol=1e-6)
+
+
+def test_scale_scene_durations_compensates_for_xfades(tmp_path: Path):
+    """With N scenes, target_sum = audio + (N-1) * XFADE to absorb the overlap."""
+    spec = _make_spec(tmp_path, n_scenes=3, durations=[1, 1, 1])
+    scaled = _scale_scene_durations(spec.scenes, audio_duration_s=10.0)
+
+    # target_sum = 10 + 2 * 0.4 = 10.8, split 1:1:1 → 3.6 per scene.
+    assert len(scaled) == 3
+    for dur in scaled:
+        assert math.isclose(dur, 3.6, abs_tol=1e-6)
+    # And the post-overlap total lands on the audio duration exactly.
+    assert math.isclose(
+        sum(scaled) - (len(scaled) - 1) * _XFADE_DURATION, 10.0, abs_tol=1e-6
+    )
+
+
+def test_scale_scene_durations_single_scene_no_compensation(tmp_path: Path):
+    """Single-scene specs don't crossfade, so target_sum == audio_duration."""
+    spec = _make_spec(tmp_path, n_scenes=1, durations=[5])
+    scaled = _scale_scene_durations(spec.scenes, audio_duration_s=8.0)
+    assert len(scaled) == 1
+    assert math.isclose(scaled[0], 8.0, abs_tol=1e-6)
+
+
+def test_single_scene_has_no_xfade(tmp_path: Path):
+    """A 1-scene spec emits the raw [v0] -> subtitles chain with no xfade."""
+    spec = _make_spec(tmp_path, n_scenes=1, durations=[3])
+    graph = _build_filter_graph(spec)
+
+    # No xfade, no concat — [v0] feeds straight into subtitles.
+    assert "xfade=" not in graph
+    assert "concat=" not in graph
+    # Subtitles still applied, and the terminal label is still [v].
+    assert "[v0]subtitles=" in graph
+    assert graph.rstrip().endswith("[v]")
+
+
+def test_scene_shorter_than_xfade_raises(tmp_path: Path):
+    """Rescaling that produces a sub-XFADE scene duration must RenderError."""
+    # 20 scenes over 7s audio — even before compensation each scene is 0.35s,
+    # well under _XFADE_DURATION (0.4s). Compensation would push the target
+    # sum up (7 + 19 * 0.4 = 14.6, so each scene ~0.73s) which is fine — so
+    # instead we force a degenerate audio_duration to make at least one scene
+    # fall below the floor.
+    spec = _make_spec(tmp_path, n_scenes=20, durations=[1] * 20)
+    # Pick audio_duration such that (audio + 19*0.4) / 20 < 0.4  →  audio < 0.4.
+    with pytest.raises(RenderError, match="xfade"):
+        _scale_scene_durations(spec.scenes, audio_duration_s=0.1)
 
 
 def test_build_filter_graph_raises_on_empty_scenes(tmp_path: Path):
@@ -265,7 +340,9 @@ def test_build_ffmpeg_command_two_scenes(tmp_path: Path):
     fc_idx = cmd.index("-filter_complex")
     fc_value = cmd[fc_idx + 1]
     assert "zoompan" in fc_value
-    assert "concat=n=2" in fc_value
+    # Two scenes → exactly one xfade, no concat.
+    assert "concat=n=" not in fc_value
+    assert fc_value.count("xfade=transition=fade") == 1
     assert "subtitles=" in fc_value
 
     # -map "[v]" and -map <audio>:a where audio index = len(scenes) = 2.

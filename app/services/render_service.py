@@ -1,9 +1,9 @@
 """Compose scene images + narration + ASS captions into a 9:16 Short (Phase 7).
 
 Single responsibility: build one `filter_complex` graph and invoke FFmpeg once.
-Ken Burns zoom on every scene, hard cuts between scenes, ASS karaoke captions
-burnt in via `libass`. Optionally mixes a random CC0 background track under
-the narration at a fixed -20 dB. No transitions.
+Ken Burns zoom on every scene, `xfade` crossfade transitions between consecutive
+scenes, ASS karaoke captions burnt in via `libass`. Optionally mixes a random
+CC0 background track under the narration at a fixed -20 dB.
 
 The filter-graph builder (`_build_ffmpeg_command`) is pure and side-effect-free
 so it can be snapshot-tested without touching ffmpeg.
@@ -44,6 +44,16 @@ _FONTS_DIR: Path = ASSETS_DIR / "fonts"
 _MUSIC_DIR: Path = ASSETS_DIR / "input" / "music"
 
 _MAX_DURATION_S = 60.0
+
+# Crossfade duration between consecutive scenes, in seconds. Each xfade overlaps
+# the tail of the previous stream with the head of the next by this amount, so
+# the final output duration is `sum(durations) - (N-1) * _XFADE_DURATION`. Any
+# scene shorter than this value cannot host an xfade and is rejected upstream.
+_XFADE_DURATION = 0.4
+
+# FFmpeg `xfade` transition kind. "fade" is a plain luma crossfade; other
+# options (fadeblack, dissolve, wipeleft, ...) are tunable later.
+_XFADE_TRANSITION = "fade"
 
 
 class RenderError(RuntimeError):
@@ -116,10 +126,11 @@ def _build_filter_graph(
 
     w, h = spec.width, spec.height
     chains: list[str] = []
-    concat_inputs = ""
+    per_scene_durations: list[float] = []
 
     for idx, scene in enumerate(spec.scenes):
         dur = float(durations[idx]) if durations is not None else float(scene.duration_seconds)
+        per_scene_durations.append(dur)
         # zoompan `d=` is in output frames; round up so no scene is clipped short.
         frames = max(1, int(round(dur * _FPS)))
         # Scale (preserving aspect, cropping overflow) so zoompan sees a
@@ -131,21 +142,58 @@ def _build_filter_graph(
             f"[v{idx}]"
         )
         chains.append(chain)
-        concat_inputs += f"[v{idx}]"
+
+    # Validate every scene can host an xfade. Only enforced when there are 2+
+    # scenes (single-scene specs never crossfade). Scaling upstream generally
+    # keeps scenes well above the floor; this is a belt-and-braces guard.
+    if len(spec.scenes) >= 2:
+        for idx, dur in enumerate(per_scene_durations):
+            if dur < _XFADE_DURATION:
+                raise RenderError(
+                    f"scene {idx} duration {dur:.3f}s is shorter than "
+                    f"xfade duration {_XFADE_DURATION}s; cannot crossfade. "
+                    f"Consider fewer scenes or a longer narration."
+                )
+
+    # Chain pairwise xfades. Offset of the k-th xfade is measured on the
+    # CUMULATIVE output timeline (accounting for prior overlaps):
+    #   offset_k = sum(dur[0..k]) - (k+1) * XFADE
+    # Single-scene case: no xfade, the raw [v0] stream is piped straight into
+    # the subtitle filter.
+    n_scenes = len(spec.scenes)
+    if n_scenes == 1:
+        pre_subs_label = "[v0]"
+        xfade_chains: list[str] = []
+    else:
+        xfade_chains = []
+        cumulative = 0.0
+        prev_label = "[v0]"
+        for k in range(n_scenes - 1):
+            cumulative += per_scene_durations[k]
+            offset = cumulative - (k + 1) * _XFADE_DURATION
+            out_label = f"[vx{k}]"
+            xfade_chains.append(
+                f"{prev_label}[v{k + 1}]"
+                f"xfade=transition={_XFADE_TRANSITION}:"
+                f"duration={_XFADE_DURATION}:offset={offset:.6f}"
+                f"{out_label}"
+            )
+            prev_label = out_label
+        pre_subs_label = prev_label
 
     sub_path = _escape_subtitle_path(spec.captions_path)
     fonts_dir = _escape_subtitle_path(_FONTS_DIR)
-    # Subtitles go AFTER concat so they render over the final timeline.
-    # No `force_style=` here: the .ass file already carries its own Style
-    # block (including the karaoke-colored PrimaryColour / SecondaryColour).
+    # Subtitles go AFTER the xfade chain so they render over the final timeline.
+    # No `force_style=` here: the .ass file already carries its own Style block
+    # (including the karaoke-colored PrimaryColour / SecondaryColour).
     # force_style would override them and kill the yellow/white highlight.
-    concat_and_subs = (
-        f"{concat_inputs}concat=n={len(spec.scenes)}:v=1:a=0,"
+    subs_chain = (
+        f"{pre_subs_label}"
         f"subtitles='{sub_path}':fontsdir='{fonts_dir}'"
         f"[v]"
     )
 
-    graph_parts = chains + [concat_and_subs]
+    graph_parts = chains + xfade_chains + [subs_chain]
 
     if music_path is not None:
         # Narration is input index len(scenes); music is len(scenes)+1.
@@ -166,18 +214,48 @@ def _build_filter_graph(
 def _scale_scene_durations(
     scenes: list, audio_duration_s: float
 ) -> list[float]:
-    """Rescale each scene's duration so their sum equals `audio_duration_s`.
+    """Rescale each scene's duration so the xfaded timeline matches the audio.
 
     Preserves the relative weights from the script — a scene that was planned
     for twice as long as another still ends up twice as long. Called when the
     real TTS output is shorter (common) or longer than the script estimate.
+
+    Because consecutive scenes crossfade (overlap by `_XFADE_DURATION`), the
+    final video length is `sum(scaled) - (N - 1) * _XFADE_DURATION`. To hit
+    `audio_duration_s` at the output, we scale towards a sum that COMPENSATES
+    for those overlaps:
+        target_sum = audio_duration_s + (N - 1) * _XFADE_DURATION
+    For single-scene specs the compensation collapses to zero, matching the
+    pre-xfade behaviour exactly.
+
+    If any scaled duration falls below `_XFADE_DURATION`, raises RenderError
+    — xfade can't fit. In practice with 9-13 scenes over ~45-58s audio this
+    never trips, but short narrations with many scenes can (and should fail
+    loudly).
     """
+    n = len(scenes)
+    # Only compensate when there's an xfade to compensate for.
+    overlap_total = (n - 1) * _XFADE_DURATION if n >= 2 else 0.0
+    target_sum = audio_duration_s + overlap_total
+
     weights = [float(s.duration_seconds) for s in scenes]
     total = sum(weights)
     if total <= 0:
-        # Defensive: fall back to equal splits.
-        return [audio_duration_s / len(scenes)] * len(scenes)
-    return [(w / total) * audio_duration_s for w in weights]
+        # Defensive: fall back to equal splits of the compensated target.
+        scaled = [target_sum / n] * n
+    else:
+        scaled = [(w / total) * target_sum for w in weights]
+
+    if n >= 2:
+        for idx, dur in enumerate(scaled):
+            if dur < _XFADE_DURATION:
+                raise RenderError(
+                    f"scene {idx} scaled duration {dur:.3f}s is shorter than "
+                    f"xfade duration {_XFADE_DURATION}s; cannot crossfade. "
+                    f"Audio is {audio_duration_s:.2f}s across {n} scenes — "
+                    f"consider fewer scenes or a longer narration."
+                )
+    return scaled
 
 
 def _build_ffmpeg_command(
