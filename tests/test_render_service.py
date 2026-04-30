@@ -23,6 +23,7 @@ from app.services.render_service import (
     _build_ffmpeg_command,
     _build_filter_graph,
     _escape_subtitle_path,
+    _pick_music_track,
     render_short,
 )
 
@@ -108,6 +109,51 @@ def test_escape_subtitle_path_escapes_windows_drive_colon(tmp_path: Path):
 
 
 # --------------------------------------------------------------------------- #
+# Unit: _pick_music_track
+# --------------------------------------------------------------------------- #
+
+def test_pick_music_track_is_deterministic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Stage 3 fake mp3 files. _pick_music_track only lists them, it doesn't
+    # decode — so empty files are fine for this unit test.
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
+    (music_dir / "a.mp3").write_bytes(b"")
+    (music_dir / "b.mp3").write_bytes(b"")
+    (music_dir / "c.mp3").write_bytes(b"")
+    monkeypatch.setattr(render_service, "_MUSIC_DIR", music_dir)
+
+    # Same job_id → same track every call (reproducible re-renders).
+    first = _pick_music_track("foo")
+    assert first is not None
+    for _ in range(5):
+        assert _pick_music_track("foo") == first
+
+    # ~20 job_ids rotate through at least 2 distinct tracks — the distribution
+    # isn't required to be uniform, just non-degenerate.
+    picks = {_pick_music_track(f"job-{i}") for i in range(20)}
+    assert len(picks) > 1, f"expected varied picks across 20 job_ids, got {picks}"
+
+
+def test_pick_music_track_empty_dir_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    music_dir = tmp_path / "music"
+    music_dir.mkdir()
+    monkeypatch.setattr(render_service, "_MUSIC_DIR", music_dir)
+    assert _pick_music_track("foo") is None
+
+
+def test_pick_music_track_missing_dir_returns_none(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    missing = tmp_path / "does-not-exist"
+    monkeypatch.setattr(render_service, "_MUSIC_DIR", missing)
+    assert _pick_music_track("foo") is None
+
+
+# --------------------------------------------------------------------------- #
 # Unit: _build_filter_graph
 # --------------------------------------------------------------------------- #
 
@@ -145,6 +191,38 @@ def test_build_filter_graph_raises_on_empty_scenes(tmp_path: Path):
     spec.scenes.clear()
     with pytest.raises(ValueError):
         _build_filter_graph(spec)
+
+
+def test_build_filter_graph_without_music_has_no_amix(tmp_path: Path):
+    # Sanity: the default (music_path=None) output must NOT contain any of the
+    # mix-specific tokens, so downstream consumers that just map <N>:a still
+    # work identically to before.
+    spec = _make_spec(tmp_path, n_scenes=2)
+    graph = _build_filter_graph(spec)
+    assert "amix" not in graph
+    assert "volume=0.1" not in graph
+    assert "[a]" not in graph.split(";")[-1]  # last chain ends with [v], not [a]
+
+
+def test_build_filter_graph_with_music_adds_amix(tmp_path: Path):
+    spec = _make_spec(tmp_path, n_scenes=2)
+    music = tmp_path / "bg.mp3"
+    music.write_bytes(b"")  # contents irrelevant — builder is pure
+
+    graph = _build_filter_graph(spec, music_path=music)
+
+    # -20 dB ≈ 0.1 linear amplitude on the music stream.
+    assert "volume=0.1" in graph
+    # Mix narration + music into a single [a] output, pinned to narration length.
+    assert "amix=inputs=2" in graph
+    assert "duration=first" in graph
+    # Narration is input index len(scenes); music is len(scenes)+1.
+    assert "[2:a]" in graph  # narration
+    assert "[3:a]" in graph  # music
+    # Final audio label that -map "[a]" will reference.
+    assert graph.rstrip().endswith("[a]")
+    # Video label must still be present — the mix shouldn't clobber the video graph.
+    assert "[v]" in graph
 
 
 # --------------------------------------------------------------------------- #
@@ -191,10 +269,13 @@ def test_build_ffmpeg_command_two_scenes(tmp_path: Path):
     assert "subtitles=" in fc_value
 
     # -map "[v]" and -map <audio>:a where audio index = len(scenes) = 2.
+    # With music_path=None we stay on the raw narration stream, NOT [a].
     map_indices = [i for i, a in enumerate(cmd) if a == "-map"]
     assert len(map_indices) == 2
     assert cmd[map_indices[0] + 1] == "[v]"
     assert cmd[map_indices[1] + 1] == "2:a"
+    # No mp3 input should be present in the no-music variant.
+    assert not any(a == "-i" and cmd[i + 1].endswith(".mp3") for i, a in enumerate(cmd))
 
     # Encoder args.
     assert "-c:v" in cmd and cmd[cmd.index("-c:v") + 1] == "libx264"
@@ -204,6 +285,41 @@ def test_build_ffmpeg_command_two_scenes(tmp_path: Path):
     assert "-shortest" in cmd
 
     # Output path is the last arg.
+    assert cmd[-1] == str(spec.output_path)
+
+
+def test_build_ffmpeg_command_with_music_adds_input_and_maps_amix(tmp_path: Path):
+    spec = _make_spec(tmp_path, n_scenes=2, durations=[4, 5])
+    music = tmp_path / "bg.mp3"
+    music.write_bytes(b"")
+
+    cmd = _build_ffmpeg_command(spec, "/usr/bin/ffmpeg", music_path=music)
+
+    # One narration -i (.wav) and one music -i (.mp3), in that order.
+    i_positions = [i for i, a in enumerate(cmd) if a == "-i"]
+    narration_i = [i for i in i_positions if cmd[i + 1].endswith(".wav")]
+    music_i = [i for i in i_positions if cmd[i + 1].endswith(".mp3")]
+    assert len(narration_i) == 1
+    assert len(music_i) == 1
+    # Music input must come AFTER narration so the filter-graph indices
+    # (len(scenes) for narration, len(scenes)+1 for music) line up.
+    assert music_i[0] > narration_i[0]
+    assert cmd[music_i[0] + 1] == str(music)
+
+    # -map "[v]" + -map "[a]" (the mixed output, NOT <N>:a).
+    map_indices = [i for i, a in enumerate(cmd) if a == "-map"]
+    assert len(map_indices) == 2
+    assert cmd[map_indices[0] + 1] == "[v]"
+    assert cmd[map_indices[1] + 1] == "[a]"
+    # Raw narration stream index must NOT be mapped directly when mixing.
+    assert "2:a" not in {cmd[i + 1] for i in map_indices}
+
+    # Filter graph carries the mix nodes.
+    fc_value = cmd[cmd.index("-filter_complex") + 1]
+    assert "amix=inputs=2" in fc_value
+    assert "volume=0.1" in fc_value
+
+    # Output path still trails.
     assert cmd[-1] == str(spec.output_path)
 
 
@@ -254,10 +370,8 @@ def _ffmpeg_available() -> bool:
     return False
 
 
-@pytest.mark.slow
-@pytest.mark.skipif(not _ffmpeg_available(), reason="ffmpeg not available")
-def test_render_service_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    # Point ffmpeg_helpers at the real binary if FFMPEG_PATH isn't already set.
+def _wire_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Point `ffmpeg_helpers` at the real binary; return the ffmpeg exe path."""
     if not os.getenv("FFMPEG_PATH") and Path(_FFMPEG_PATH_ENV).exists():
         monkeypatch.setenv("FFMPEG_PATH", _FFMPEG_PATH_ENV)
         # `app.config.FFMPEG_PATH` was snapshotted at import; patch it too so
@@ -266,20 +380,21 @@ def test_render_service_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(
             "app.utils.ffmpeg_helpers.FFMPEG_PATH", _FFMPEG_PATH_ENV
         )
+    return (
+        os.getenv("FFMPEG_PATH")
+        or shutil.which("ffmpeg")
+        or _FFMPEG_PATH_ENV
+    )
 
-    # Two tiny PNGs.
+
+def _build_smoke_inputs(tmp_path: Path, ffmpeg_exe: str) -> tuple[list[Path], Path, Path]:
+    """Generate two PNGs, a 2s silent WAV narration, and a minimal ASS file."""
     red = tmp_path / "scene_01.png"
     blue = tmp_path / "scene_02.png"
     Image.new("RGB", (1080, 1920), (255, 0, 0)).save(red, "PNG")
     Image.new("RGB", (1080, 1920), (0, 0, 255)).save(blue, "PNG")
 
-    # Silent narration WAV, generated via ffmpeg itself.
     narration = tmp_path / "narration.wav"
-    ffmpeg_exe = (
-        os.getenv("FFMPEG_PATH")
-        or shutil.which("ffmpeg")
-        or _FFMPEG_PATH_ENV
-    )
     subprocess.run(
         [
             ffmpeg_exe, "-y",
@@ -292,7 +407,6 @@ def test_render_service_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         capture_output=True,
     )
 
-    # Minimal ASS file with one karaoke cue spanning the whole 0-2s window.
     captions = tmp_path / "captions.ass"
     captions.write_text(
         "[Script Info]\n"
@@ -318,6 +432,26 @@ def test_render_service_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         newline="\n",
     )
 
+    return [red, blue], narration, captions
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not _ffmpeg_available(), reason="ffmpeg not available")
+def test_render_service_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    _wire_ffmpeg(monkeypatch)
+    # Force the no-music code path so this test stays focused on the base
+    # pipeline behavior regardless of what's in assets/input/music at runtime.
+    empty_music = tmp_path / "empty_music"
+    empty_music.mkdir()
+    monkeypatch.setattr(render_service, "_MUSIC_DIR", empty_music)
+
+    ffmpeg_exe = (
+        os.getenv("FFMPEG_PATH")
+        or shutil.which("ffmpeg")
+        or _FFMPEG_PATH_ENV
+    )
+    images, narration, captions = _build_smoke_inputs(tmp_path, ffmpeg_exe)
+
     output = tmp_path / "rendered" / "final.mp4"
     spec = RenderSpec(
         job_id="smoke",
@@ -325,7 +459,7 @@ def test_render_service_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             Scene(id=1, scene_text="a", image_prompt="p1", duration_seconds=1),
             Scene(id=2, scene_text="b", image_prompt="p2", duration_seconds=1),
         ],
-        image_paths=[red, blue],
+        image_paths=images,
         narration_path=narration,
         captions_path=captions,
         output_path=output,
@@ -343,3 +477,122 @@ def test_render_service_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
     w, h = probe_resolution(result)
     assert (w, h) == (1080, 1920)
+
+
+@pytest.mark.slow
+@pytest.mark.skipif(not _ffmpeg_available(), reason="ffmpeg not available")
+def test_render_service_smoke_with_music(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """End-to-end render with a real music bed.
+
+    Generates a 3s 440 Hz tone mp3 as the "music" library, points _MUSIC_DIR
+    at it, and asserts the rendered mp4:
+      - has exactly one audio stream (narration + music mixed down to one)
+      - audio duration ~= narration duration (1s), NOT music duration (3s),
+        proving `duration=first` cut the music at the narration boundary.
+    """
+    ffmpeg_exe = _wire_ffmpeg(monkeypatch)
+    images, _, captions = _build_smoke_inputs(tmp_path, ffmpeg_exe)
+
+    # Short 1s silent narration so we can tell narration-length from music-length.
+    narration = tmp_path / "narration.wav"
+    subprocess.run(
+        [
+            ffmpeg_exe, "-y",
+            "-f", "lavfi",
+            "-i", "anullsrc=r=24000:cl=mono",
+            "-t", "1",
+            str(narration),
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    # Rewrite the ASS cue to fit within the new 1s narration window.
+    captions.write_text(
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 1080\n"
+        "PlayResY: 1920\n"
+        "ScaledBorderAndShadow: yes\n"
+        "\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, "
+        "ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, "
+        "Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        "Style: Default,Bebas Neue,56,&H0000D7FF,&H00FFFFFF,&H00000000,"
+        "&H00000000,0,0,0,0,100,100,0,0,1,3,1,2,60,60,300,1\n"
+        "\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, "
+        "Effect, Text\n"
+        "Dialogue: 0,0:00:00.00,0:00:01.00,Default,,0,0,0,,"
+        "{\\k50}hello {\\k50}music\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    # Fake music library: a single 3s 440 Hz tone mp3. 3s > 1s narration so we
+    # can verify `duration=first` clips it correctly.
+    music_dir = tmp_path / "music_lib"
+    music_dir.mkdir()
+    music_track = music_dir / "tone.mp3"
+    subprocess.run(
+        [
+            ffmpeg_exe, "-y",
+            "-f", "lavfi",
+            "-i", "sine=frequency=440:duration=3",
+            "-acodec", "libmp3lame",
+            str(music_track),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert music_track.exists() and music_track.stat().st_size > 0
+    monkeypatch.setattr(render_service, "_MUSIC_DIR", music_dir)
+
+    output = tmp_path / "rendered" / "final.mp4"
+    spec = RenderSpec(
+        job_id="smoke-music",
+        scenes=[
+            Scene(id=1, scene_text="a", image_prompt="p1", duration_seconds=1),
+            Scene(id=2, scene_text="b", image_prompt="p2", duration_seconds=1),
+        ],
+        image_paths=images,
+        narration_path=narration,
+        captions_path=captions,
+        output_path=output,
+    )
+
+    result = render_short(spec)
+    assert result.exists()
+
+    # 1) Audio duration must match the narration (~1s), NOT the 3s music track.
+    #    This is the clearest proof that `duration=first` + `-shortest` cut the
+    #    music rather than letting it drag the video out.
+    from app.utils.ffmpeg_helpers import ffprobe_bin, probe_duration
+
+    dur = probe_duration(result)
+    assert 0.6 <= dur <= 1.4, f"expected ~1s (narration), got {dur:.2f}s"
+
+    # 2) Exactly one audio stream — the amix output. If we'd accidentally mapped
+    #    both, ffprobe would report 2 streams.
+    probe = subprocess.run(
+        [
+            ffprobe_bin(), "-v", "error",
+            "-select_streams", "a",
+            "-show_entries", "stream=index",
+            "-of", "csv=p=0",
+            str(result),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    audio_stream_lines = [ln for ln in probe.stdout.splitlines() if ln.strip()]
+    assert len(audio_stream_lines) == 1, (
+        f"expected 1 audio stream, got {len(audio_stream_lines)}: "
+        f"{audio_stream_lines!r}"
+    )

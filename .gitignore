@@ -42,6 +42,9 @@ assets/generated/*
 assets/rendered/*
 !assets/rendered/.gitkeep
 
-# assets/input is for ephemeral prompts / CC0 music; ignore contents but keep dir.
+# assets/input is for ephemeral prompts; ignore contents but keep dir.
 assets/input/*
 !assets/input/.gitkeep
+# ... except the bundled CC0 music library — those ship with the repo.
+!assets/input/music/
+!assets/input/music/*.mp3
