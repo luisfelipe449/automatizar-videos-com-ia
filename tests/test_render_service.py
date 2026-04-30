@@ -149,15 +149,24 @@ def test_build_ffmpeg_command_two_scenes(tmp_path: Path):
     # First argument is the binary.
     assert cmd[0] == "/usr/bin/ffmpeg"
 
-    # Exactly two `-loop 1` / `-t` / `-i <image>` groups.
+    # Exactly two `-framerate 1 -loop 1 -t 1 -i <image>` groups. Each input
+    # feeds a single frame; zoompan's `d=` controls the per-scene duration.
     loop_indices = [i for i, a in enumerate(cmd) if a == "-loop"]
     assert len(loop_indices) == 2
-    for i, expected_dur in zip(loop_indices, [4, 5]):
+    for i in loop_indices:
+        assert cmd[i - 2] == "-framerate"
+        assert cmd[i - 1] == "1"
         assert cmd[i + 1] == "1"
         assert cmd[i + 2] == "-t"
-        assert cmd[i + 3] == str(expected_dur)
+        assert cmd[i + 3] == "1"
         assert cmd[i + 4] == "-i"
         assert cmd[i + 5].endswith(".png")
+
+    # Filter graph should carry the per-scene durations via zoompan `d=`.
+    fc_value = cmd[cmd.index("-filter_complex") + 1]
+    # 4s * 30fps = 120 frames, 5s * 30fps = 150 frames.
+    assert "d=120" in fc_value
+    assert "d=150" in fc_value
 
     # The narration -i appears once, after the image inputs.
     narration_positions = [

@@ -64,18 +64,26 @@ def _escape_subtitle_path(p: Path) -> str:
     return posix.replace(":", r"\:")
 
 
-def _build_filter_graph(spec: RenderSpec) -> str:
-    """Build the `filter_complex` string. Pure: string in → string out."""
+def _build_filter_graph(spec: RenderSpec, durations: list[float] | None = None) -> str:
+    """Build the `filter_complex` string. Pure: string in → string out.
+
+    `durations` overrides `scene.duration_seconds` when provided (e.g. scaled
+    to match the narration audio length). Must have the same length as
+    `spec.scenes`.
+    """
     if not spec.scenes:
         raise ValueError("RenderSpec.scenes must be non-empty")
+    if durations is not None and len(durations) != len(spec.scenes):
+        raise ValueError("durations length must match scenes length")
 
     w, h = spec.width, spec.height
     chains: list[str] = []
     concat_inputs = ""
 
     for idx, scene in enumerate(spec.scenes):
-        dur = int(scene.duration_seconds)
-        frames = dur * _FPS
+        dur = float(durations[idx]) if durations is not None else float(scene.duration_seconds)
+        # zoompan `d=` is in output frames; round up so no scene is clipped short.
+        frames = max(1, int(round(dur * _FPS)))
         # Scale (preserving aspect, cropping overflow) so zoompan sees a
         # correctly sized frame regardless of the source image's aspect.
         chain = (
@@ -98,11 +106,36 @@ def _build_filter_graph(spec: RenderSpec) -> str:
     return ";".join(chains + [concat_and_subs])
 
 
-def _build_ffmpeg_command(spec: RenderSpec, ffmpeg_bin_path: str) -> list[str]:
+def _scale_scene_durations(
+    scenes: list, audio_duration_s: float
+) -> list[float]:
+    """Rescale each scene's duration so their sum equals `audio_duration_s`.
+
+    Preserves the relative weights from the script — a scene that was planned
+    for twice as long as another still ends up twice as long. Called when the
+    real TTS output is shorter (common) or longer than the script estimate.
+    """
+    weights = [float(s.duration_seconds) for s in scenes]
+    total = sum(weights)
+    if total <= 0:
+        # Defensive: fall back to equal splits.
+        return [audio_duration_s / len(scenes)] * len(scenes)
+    return [(w / total) * audio_duration_s for w in weights]
+
+
+def _build_ffmpeg_command(
+    spec: RenderSpec,
+    ffmpeg_bin_path: str,
+    durations: list[float] | None = None,
+) -> list[str]:
     """Return the full argv for `subprocess.run`. Pure — no IO.
 
+    `durations` (optional) overrides scene durations in both the filter graph
+    and any per-scene flags. Must match `len(spec.scenes)`. When omitted, the
+    scene's own `duration_seconds` is used.
+
     Layout:
-        ffmpeg  -loop 1 -t D -i img_1  ...  -loop 1 -t D -i img_N
+        ffmpeg  -framerate 1 -loop 1 -t 1 -i img_1  ...  -i img_N
                 -i narration.wav
                 -filter_complex "<graph>"
                 -map "[v]" -map <N>:a
@@ -120,11 +153,15 @@ def _build_ffmpeg_command(spec: RenderSpec, ffmpeg_bin_path: str) -> list[str]:
 
     cmd: list[str] = [ffmpeg_bin_path, "-y"]
 
-    # One looped still image per scene.
-    for scene, image_path in zip(spec.scenes, spec.image_paths):
+    # One still image per scene. We feed ONE input frame at 1 fps: zoompan
+    # then generates `d` output frames from that single input frame. Using
+    # `-loop 1 -t D` here instead would spam zoompan with D*fps duplicate
+    # input frames and visually freeze the scene on the first frame.
+    for image_path in spec.image_paths:
         cmd += [
+            "-framerate", "1",
             "-loop", "1",
-            "-t", str(int(scene.duration_seconds)),
+            "-t", "1",
             "-i", str(image_path),
         ]
 
@@ -132,7 +169,7 @@ def _build_ffmpeg_command(spec: RenderSpec, ffmpeg_bin_path: str) -> list[str]:
     audio_input_index = len(spec.scenes)
     cmd += ["-i", str(spec.narration_path)]
 
-    cmd += ["-filter_complex", _build_filter_graph(spec)]
+    cmd += ["-filter_complex", _build_filter_graph(spec, durations)]
     cmd += ["-map", "[v]", "-map", f"{audio_input_index}:a"]
     cmd += [
         "-c:v", "libx264",
@@ -172,7 +209,18 @@ def render_short(spec: RenderSpec) -> Path:
     output_path = Path(spec.output_path).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    cmd = _build_ffmpeg_command(spec, ffmpeg_bin())
+    # Scale scene durations to match the real narration length so no scene is
+    # cut off by `-shortest` and the final video length matches the audio.
+    audio_duration = probe_duration(Path(spec.narration_path))
+    scaled = _scale_scene_durations(spec.scenes, audio_duration)
+    script_total = sum(int(s.duration_seconds) for s in spec.scenes)
+    if abs(audio_duration - script_total) > 0.5:
+        print(
+            f"{_LOG_PREFIX} rescaling scenes: script={script_total}s -> "
+            f"audio={audio_duration:.2f}s"
+        )
+
+    cmd = _build_ffmpeg_command(spec, ffmpeg_bin(), scaled)
     print(
         f"{_LOG_PREFIX} running: ffmpeg "
         f"{len(spec.scenes)} scene(s) + narration -> {output_path.name}"
