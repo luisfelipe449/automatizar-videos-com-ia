@@ -11,7 +11,7 @@ import pytest
 
 from app.utils import cache, quota
 from app.utils.filepaths import make_job_id, scene_image_path
-from app.utils.retries import is_retryable_http
+from app.utils.retries import default_retry, is_retryable_http
 
 
 # --------------------------------------------------------------------------- #
@@ -71,6 +71,59 @@ def test_is_retryable_http_matches_transient_codes():
 
 def test_is_retryable_http_rejects_deterministic_errors():
     assert is_retryable_http(ValueError("nope")) is False
+
+
+def test_is_retryable_http_treats_rate_limit_as_transient():
+    # Gemini/Groq surface quota pressure as 429 — retry them.
+    assert is_retryable_http(ValueError("429 rate limit")) is True
+    assert is_retryable_http(RuntimeError("server said rate_limit_exceeded")) is True
+
+
+def test_is_retryable_http_rejects_4xx_other_than_429():
+    assert is_retryable_http(ValueError("400 bad request")) is False
+    assert is_retryable_http(ValueError("401 unauthorized")) is False
+    assert is_retryable_http(ValueError("404 not found")) is False
+
+
+def test_is_retryable_http_accepts_builtin_connection_and_timeout_errors():
+    assert is_retryable_http(ConnectionError()) is True
+    assert is_retryable_http(TimeoutError()) is True
+
+
+def test_default_retry_does_not_retry_deterministic_errors(monkeypatch):
+    """A 400-shaped error must fail fast (single attempt), not burn 3."""
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
+    calls = {"n": 0}
+
+    @default_retry
+    def explode_deterministically():
+        calls["n"] += 1
+        raise ValueError("400 invalid payload")
+
+    with pytest.raises(ValueError, match="400 invalid"):
+        explode_deterministically()
+    assert calls["n"] == 1
+
+
+def test_default_retry_retries_transient_connection_error(monkeypatch):
+    """ConnectionError is transient → default_retry uses all 3 attempts."""
+    import time
+
+    monkeypatch.setattr(time, "sleep", lambda _s: None)
+
+    calls = {"n": 0}
+
+    @default_retry
+    def explode_transiently():
+        calls["n"] += 1
+        raise ConnectionError("network blip")
+
+    with pytest.raises(ConnectionError):
+        explode_transiently()
+    assert calls["n"] == 3
 
 
 # --------------------------------------------------------------------------- #

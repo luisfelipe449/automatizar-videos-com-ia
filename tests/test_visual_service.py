@@ -46,6 +46,13 @@ class _FakeResponse:
         self.content = content
         self.headers = {"Content-Type": content_type}
 
+    def raise_for_status(self) -> None:
+        """Mirror `requests.Response.raise_for_status` for 4xx/5xx statuses."""
+        if 400 <= self.status_code < 600:
+            err = requests.exceptions.HTTPError(f"{self.status_code} HTTP error")
+            err.response = self  # type: ignore[attr-defined]
+            raise err
+
 
 # --------------------------------------------------------------------------- #
 # Fake Gemini Imagen SDK
@@ -254,6 +261,31 @@ def test_corrupt_png_from_pollinations_falls_through(monkeypatch, patched_env, n
     assert path.read_bytes() == _FAKE_IMAGEN_PNG
     # And no `.part` file was left behind.
     assert not filepaths.scene_image_path("job-corrupt", 1).with_suffix(".png.part").exists()
+
+
+def test_pollinations_5xx_is_retried(monkeypatch, patched_env, no_backoff):
+    """A 502 followed by a 200 should succeed on retry — raise_for_status kicks in."""
+    from app.services.visual_service import generate_scene_image
+    from app.utils import filepaths
+
+    state = _install_fake_requests(
+        monkeypatch,
+        [
+            _FakeResponse(status_code=502, content=b"", content_type="text/html"),
+            _FakeResponse(status_code=502, content=b"", content_type="text/html"),
+            _FakeResponse(status_code=200, content=_FAKE_PNG, content_type="image/png"),
+        ],
+    )
+
+    path = generate_scene_image("retryable scene", job_id="job-5xx", scene_id=1)
+
+    assert path == filepaths.scene_image_path("job-5xx", 1)
+    assert path.read_bytes() == _FAKE_PNG
+    # Exactly three GETs: 2 × 502 + 1 × 200.
+    assert len(state["calls"]) == 3
+    # `stream=True` must no longer be set on the request (Fix 3).
+    for call in state["calls"]:
+        assert call["kwargs"].get("stream") is not True
 
 
 def test_generate_all_scene_images_preserves_order(monkeypatch, patched_env):

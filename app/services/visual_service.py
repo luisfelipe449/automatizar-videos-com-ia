@@ -98,8 +98,15 @@ def _write_png_safe(data: bytes, out_path: Path) -> None:
 
 @network_retry
 def _pollinations_get(url: str) -> requests.Response:
-    """Raw GET wrapped by `network_retry` so flaky 5xx/Timeout attempts back off."""
-    return requests.get(url, timeout=_POLLINATIONS_TIMEOUT_S, stream=True)
+    """Raw GET wrapped by `network_retry` so flaky 5xx/Timeout attempts back off.
+
+    Calls `raise_for_status()` so 5xx / 429 responses surface as
+    `requests.exceptions.HTTPError` — which `network_retry`'s predicate
+    recognises as transient and will retry with backoff.
+    """
+    response = requests.get(url, timeout=_POLLINATIONS_TIMEOUT_S)
+    response.raise_for_status()
+    return response
 
 
 def _via_pollinations(image_prompt: str) -> bytes:

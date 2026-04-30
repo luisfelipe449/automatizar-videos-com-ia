@@ -82,11 +82,20 @@ def mocked_services(monkeypatch, redirected_dirs: Path):
         cache.write_hash_file(filepaths.narration_hash_path(job_id), cache.hash_text(narration))
         return wav
 
-    def fake_transcribe_to_srt(narration_wav: Path, job_id: str, *, words_per_chunk: int = 6) -> Path:
+    def fake_transcribe_to_srt(
+        narration_wav: Path,
+        job_id: str,
+        *,
+        words_per_chunk: int = 6,
+        narration_hash: str | None = None,
+    ) -> Path:
         calls["captions"] += 1
         filepaths.ensure_job_dirs(job_id)
         srt = filepaths.captions_path(job_id)
         srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nhi\n", encoding="utf-8")
+        # Mirror the real service: persist the hash so the next run cache-hits.
+        if narration_hash is not None:
+            cache.write_hash_file(filepaths.captions_hash_path(job_id), narration_hash)
         return srt
 
     def fake_generate_all_scene_images(script: Script) -> list[Path]:

@@ -13,7 +13,7 @@ from pathlib import Path
 from groq import Groq
 
 from app.config import require
-from app.utils import filepaths
+from app.utils import cache, filepaths
 from app.utils.retries import default_retry
 
 _LOG_PREFIX = "[caption_service]"
@@ -148,12 +148,16 @@ def transcribe_to_srt(
     job_id: str,
     *,
     words_per_chunk: int = 6,
+    narration_hash: str | None = None,
 ) -> Path:
     """Transcribe the narration WAV and write captions.srt.
 
     Returns the absolute path to the SRT. Raises CaptionError on API failure.
-    The function is idempotent only at the orchestrator level (presence of
-    captions.srt); this service always re-transcribes when called.
+    Writes a sibling `captions.hash` so reruns with identical narration
+    short-circuit without hitting Groq. If `narration_hash` is None the hash is
+    derived from the WAV bytes; callers that already know the narration-text
+    hash (e.g. the orchestrator) should pass it to keep the cache key consistent
+    with `tts_service`.
     """
     narration_wav = Path(narration_wav)
     if not narration_wav.exists():
@@ -161,6 +165,16 @@ def transcribe_to_srt(
 
     filepaths.ensure_job_dirs(job_id)
     srt_path = filepaths.captions_path(job_id)
+    hash_path = filepaths.captions_hash_path(job_id)
+
+    if narration_hash is None:
+        # Fall back to hashing the WAV bytes so the cache still works when the
+        # caller can't supply the narration-text hash.
+        narration_hash = cache.hash_text(narration_wav.read_bytes().hex())
+
+    if cache.artifact_fresh(srt_path, hash_path, narration_hash):
+        print(f"{_LOG_PREFIX} cache hit {srt_path}")
+        return srt_path
 
     client = Groq(api_key=require("GROQ_API_KEY"))
     try:
@@ -186,5 +200,6 @@ def transcribe_to_srt(
     # BOM-free UTF-8, LF line endings — FFmpeg's `subtitles` filter is happiest
     # with this combination on Windows.
     srt_path.write_text(srt_text, encoding="utf-8", newline="\n")
+    cache.write_hash_file(hash_path, narration_hash)
     print(f"{_LOG_PREFIX} wrote {srt_path} ({len(cues)} cues from {len(words)} words)")
     return srt_path

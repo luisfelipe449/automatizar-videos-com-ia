@@ -138,7 +138,11 @@ def _stage_tts(script: Script) -> Path:
 
 
 def _stage_captions(script: Script) -> Path:
-    return transcribe_to_srt(filepaths.narration_path(script.job_id), script.job_id)
+    return transcribe_to_srt(
+        filepaths.narration_path(script.job_id),
+        script.job_id,
+        narration_hash=cache.hash_text(script.narration),
+    )
 
 
 def _stage_visuals(script: Script) -> list[Path]:
@@ -168,12 +172,17 @@ def _tts_fresh(script: Script) -> Path | None:
     return wav if cache.artifact_fresh(wav, hsh, cache.hash_text(script.narration)) else None
 
 
-def _captions_fresh(job_id: str) -> Path | None:
-    cp = filepaths.captions_path(job_id)
-    try:
-        return cp if cp.exists() and cp.stat().st_size > 0 else None
-    except OSError:
-        return None
+def _captions_fresh(script: Script) -> Path | None:
+    """Captions are fresh iff the sibling hash matches `hash_text(narration)`.
+
+    Protects against stale SRTs left behind from a previous narration: if the
+    narration text changes, tts_service regenerates the WAV and the captions'
+    hash mismatches, forcing a retranscribe.
+    """
+    cp = filepaths.captions_path(script.job_id)
+    hp = filepaths.captions_hash_path(script.job_id)
+    expected = cache.hash_text(script.narration)
+    return cp if cache.artifact_fresh(cp, hp, expected) else None
 
 
 def _visuals_fresh(script: Script) -> list[Path] | None:
@@ -251,7 +260,7 @@ def run_pipeline(
 
         captions_path, stages["captions"] = _run_stage(
             "captions", lambda: _stage_captions(script),
-            check_cache=lambda: _captions_fresh(jid),
+            check_cache=lambda: _captions_fresh(script),
         )
         flush(False)
 

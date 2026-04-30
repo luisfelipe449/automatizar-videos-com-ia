@@ -297,6 +297,63 @@ def test_transient_connection_error_is_retried(monkeypatch, patched_env, tmp_pat
     assert "oi tudo bem" in srt_path.read_text(encoding="utf-8")
 
 
+def test_caption_cache_hit_with_matching_hash(monkeypatch, patched_env, tmp_path):
+    """A pre-existing SRT + matching `captions.hash` must skip the Groq call."""
+    from app.services.caption_service import transcribe_to_srt
+    from app.utils import cache, filepaths
+
+    wav = _touch_wav(tmp_path / "narration.wav")
+    narration_hash = cache.hash_text("some narration text")
+
+    # Pre-create the artifact + hash so the service sees a fresh cache.
+    filepaths.ensure_job_dirs("job-cache-hit")
+    srt = filepaths.captions_path("job-cache-hit")
+    srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nolá\n", encoding="utf-8")
+    cache.write_hash_file(filepaths.captions_hash_path("job-cache-hit"), narration_hash)
+
+    # Install an empty queue — any API call would blow up.
+    _install_fake_groq(monkeypatch, [])
+
+    returned = transcribe_to_srt(wav, job_id="job-cache-hit", narration_hash=narration_hash)
+
+    assert returned == srt
+    # Zero Groq invocations thanks to the cache.
+    assert FakeGroq.last_instance is None
+
+
+def test_caption_cache_miss_on_hash_change(monkeypatch, patched_env, tmp_path):
+    """A stale SRT whose hash no longer matches must trigger a fresh transcription."""
+    from app.services.caption_service import transcribe_to_srt
+    from app.utils import cache, filepaths
+
+    wav = _touch_wav(tmp_path / "narration.wav")
+    old_hash = cache.hash_text("old narration")
+    new_hash = cache.hash_text("brand new narration")
+
+    filepaths.ensure_job_dirs("job-cache-miss")
+    srt = filepaths.captions_path("job-cache-miss")
+    srt.write_text("1\n00:00:00,000 --> 00:00:01,000\nSTALE\n", encoding="utf-8")
+    cache.write_hash_file(filepaths.captions_hash_path("job-cache-miss"), old_hash)
+
+    words = [
+        {"word": "novo", "start": 0.0, "end": 0.4},
+        {"word": "conteúdo", "start": 0.4, "end": 0.9},
+    ]
+    _install_fake_groq(monkeypatch, [_make_transcription(words)])
+
+    returned = transcribe_to_srt(wav, job_id="job-cache-miss", narration_hash=new_hash)
+
+    assert returned == srt
+    # Groq WAS called because the narration hash changed.
+    assert len(FakeGroq.last_instance.calls) == 1
+    # The captions file was rewritten (no longer contains the stale marker).
+    contents = srt.read_text(encoding="utf-8")
+    assert "STALE" not in contents
+    assert "novo conteúdo" in contents
+    # The hash file now stores the NEW hash.
+    assert cache.read_hash_file(filepaths.captions_hash_path("job-cache-miss")) == new_hash
+
+
 def test_chunk_boundary_13_words_chunk_size_6(monkeypatch, patched_env, tmp_path):
     from app.services.caption_service import transcribe_to_srt
 

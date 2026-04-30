@@ -18,6 +18,8 @@ from tenacity import (
 
 # Exception classes that are ALWAYS safe to retry (transport-level failures).
 _RETRYABLE_EXC_TYPES: tuple[type[BaseException], ...] = (
+    ConnectionError,
+    TimeoutError,
     requests.exceptions.ConnectionError,
     requests.exceptions.Timeout,
     httpx.ConnectError,
@@ -25,15 +27,37 @@ _RETRYABLE_EXC_TYPES: tuple[type[BaseException], ...] = (
     httpx.RemoteProtocolError,
 )
 
+# HTTP-level exception types whose `.response.status_code` we inspect to decide
+# whether a retry is warranted (only 5xx / 429 should be retried).
+_HTTP_STATUS_EXC_TYPES: tuple[type[BaseException], ...] = (
+    requests.exceptions.HTTPError,
+    httpx.HTTPStatusError,
+)
+
 # Substrings (lowercased) that indicate a transient HTTP-level problem
 # even when the exception type isn't one of the well-known ones above.
-_RETRYABLE_SUBSTRINGS: tuple[str, ...] = ("500", "502", "503", "504", "timeout")
+_RETRYABLE_SUBSTRINGS: tuple[str, ...] = (
+    "500",
+    "502",
+    "503",
+    "504",
+    "429",
+    "timeout",
+    "rate_limit",
+    "rate limit",
+)
 
 
 def is_retryable_http(exc: BaseException) -> bool:
     """Return True when `exc` looks like a transient network/HTTP error."""
     if isinstance(exc, _RETRYABLE_EXC_TYPES):
         return True
+    if isinstance(exc, _HTTP_STATUS_EXC_TYPES):
+        response = getattr(exc, "response", None)
+        status = getattr(response, "status_code", None)
+        if isinstance(status, int):
+            return status >= 500 or status == 429
+        # Fall through to substring match when the response/status is missing.
     message = str(exc).lower()
     return any(token in message for token in _RETRYABLE_SUBSTRINGS)
 
@@ -44,9 +68,13 @@ def network_retry_predicate(exc: BaseException) -> bool:
 
 
 # Generic retry: 3 attempts, exponential 1 → 8s with ±1s jitter.
+# Uses the same transient-error predicate as `network_retry` so deterministic
+# failures (e.g. Groq 400, ScriptGenerationError) fail fast instead of burning
+# all 3 attempts.
 default_retry = retry(
     stop=stop_after_attempt(3),
     wait=wait_exponential_jitter(initial=1, max=8, jitter=1),
+    retry=retry_if_exception(is_retryable_http),
     reraise=True,
 )
 

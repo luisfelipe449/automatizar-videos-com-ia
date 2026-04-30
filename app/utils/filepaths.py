@@ -41,6 +41,10 @@ def captions_path(job_id: str) -> Path:
     return job_dir(job_id) / "captions.srt"
 
 
+def captions_hash_path(job_id: str) -> Path:
+    return job_dir(job_id) / "captions.hash"
+
+
 def scene_image_path(job_id: str, scene_id: int) -> Path:
     return job_dir(job_id) / f"scene_{scene_id:02d}.png"
 
