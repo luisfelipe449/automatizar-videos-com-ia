@@ -18,9 +18,12 @@ tenacity~=9.0
 # Env loading
 python-dotenv~=1.0
 
-# HTTP (Pollinations fallback, generic requests)
+# HTTP (Pollinations primary, generic requests)
 requests~=2.32
 httpx~=0.27
+
+# Image validation (visual_service output sanity + future resize needs)
+Pillow~=10.4
 
 # Tests
 pytest~=8.3
