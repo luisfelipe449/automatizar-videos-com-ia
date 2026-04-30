@@ -30,10 +30,14 @@ _LOG_PREFIX = "[render_service]"
 # each scene's duration_seconds by this value when building the graph.
 _FPS = 30
 
-# Ken Burns: zoom from 1.0 -> 1.2 over the scene. 0.0015 per frame at 30 fps
-# reaches ~1.2x in ~4.4s, so short scenes get a subtle nudge and long scenes
-# cap out at 1.2x (the `min(...)` clamp).
-_ZOOM_EXPR = "min(1.0+0.0015*on,1.2)"
+# Ken Burns: zoom from 1.0 -> 1.18 over the scene, anchored at the image
+# centre. 0.0013 per frame at 30 fps reaches 1.18x in ~4.6s, so short scenes
+# get a subtle nudge and long scenes cap out at 1.18x (the `min(...)` clamp).
+# Centre-anchoring (via x/y expressions below) keeps the subject on-axis
+# instead of zoompan's default top-left pan.
+_ZOOM_EXPR = "min(1.0+0.0013*on,1.18)"
+_ZOOM_X_EXPR = "iw/2-(iw/zoom/2)"
+_ZOOM_Y_EXPR = "ih/2-(ih/zoom/2)"
 
 # Directory holding bundled fonts (e.g. Bebas Neue). Passed to libass via
 # `fontsdir=` so we don't need to install fonts system-wide on Windows.
@@ -192,7 +196,8 @@ def _build_filter_graph(
         chain = (
             f"[{idx}:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
             f"crop={w}:{h},"
-            f"zoompan=z='{_ZOOM_EXPR}':d={frames}:s={w}x{h}:fps={_FPS}"
+            f"zoompan=z='{_ZOOM_EXPR}':x='{_ZOOM_X_EXPR}':y='{_ZOOM_Y_EXPR}':"
+            f"d={frames}:s={w}x{h}:fps={_FPS}"
             f"{rank_overlay}"
             f"[v{idx}]"
         )
