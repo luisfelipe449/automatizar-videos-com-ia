@@ -1,3 +1,8 @@
+[project]
+name = "automatizar-videos-com-ia"
+version = "0.1.0"
+requires-python = ">=3.13"
+
 [tool.pytest.ini_options]
 markers = [
     "slow: slow integration tests (real ffmpeg, network, etc.)",

@@ -246,30 +246,32 @@ def upload_short(
 
 
 def verify_credentials() -> dict:
-    """Cheap sanity check: call `channels.list(mine=True)`. No upload.
+    """Cheap sanity check: refresh the access token without hitting any API.
 
-    Returns `{"channel_id": ..., "title": ...}` for the authenticated channel.
-    Raises `YouTubeUploadError` if credentials are misconfigured or the API
-    call fails. Used by `scripts/bootstrap_youtube_oauth.py` and tests.
+    The pipeline uses scope `youtube.upload`, which does NOT grant read access —
+    calling e.g. `channels.list(mine=True)` would fail with 403 insufficient
+    permission. So we just ask Google for a fresh access token using the
+    refresh_token; if that works, the credentials are valid for upload.
+
+    Returns `{"token_refreshed": True, "scopes": [...]}`. Raises
+    `YouTubeUploadError` if the refresh token is invalid/expired/revoked.
     """
+    from google.auth.transport.requests import Request
+
     try:
-        youtube = _build_client()
-        response = youtube.channels().list(part="id,snippet", mine=True).execute()
-    except HttpError as exc:
-        status = _http_status(exc)
-        raise YouTubeUploadError(
-            f"verify_credentials failed (status={status}): {exc}"
-        ) from exc
+        creds = Credentials(
+            token=None,
+            refresh_token=require("YOUTUBE_REFRESH_TOKEN"),
+            token_uri=_TOKEN_URI,
+            client_id=require("YOUTUBE_CLIENT_ID"),
+            client_secret=require("YOUTUBE_CLIENT_SECRET"),
+            scopes=_SCOPES,
+        )
+        creds.refresh(Request())
     except Exception as exc:  # noqa: BLE001 — surface auth/transport errors uniformly
         raise YouTubeUploadError(f"verify_credentials failed: {exc}") from exc
 
-    items = response.get("items") if isinstance(response, dict) else None
-    if not items:
-        raise YouTubeUploadError(
-            "verify_credentials: channels.list returned no items"
-        )
-    item = items[0]
     return {
-        "channel_id": item.get("id", ""),
-        "title": item.get("snippet", {}).get("title", ""),
+        "token_refreshed": bool(creds.token),
+        "scopes": list(creds.scopes or _SCOPES),
     }

@@ -8,7 +8,7 @@ Pipeline em Python que transforma um prompt de texto em um YouTube Short publica
 
 ## Pré-requisitos
 
-- Python 3.12+
+- Python 3.13+ (versão oficial do projeto)
 - FFmpeg 8+ no PATH (ou caminho explícito em `FFMPEG_PATH`)
 - Conta Google com:
   - Gemini API key (AI Studio) para TTS

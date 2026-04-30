@@ -357,27 +357,46 @@ def test_multi_chunk_upload_logs_progress(
 # Tests: verify_credentials
 # --------------------------------------------------------------------------- #
 
-def test_verify_credentials_returns_channel_info(monkeypatch, patched_env):
+def test_verify_credentials_refreshes_access_token(monkeypatch, patched_env):
+    """verify_credentials() must refresh the access token and NOT hit any API.
+
+    The pipeline only holds the `youtube.upload` scope, so calling a data
+    endpoint like `channels.list(mine=True)` would fail with 403. We only
+    validate that the refresh_token itself is still usable.
+    """
     from app.services import youtube_service
 
-    channels_payload = {
-        "items": [
-            {"id": "UC-fake-channel", "snippet": {"title": "Fake Channel"}},
-        ]
-    }
-    _install_fake_build(
-        monkeypatch, queue=[], channels_payload=channels_payload
-    )
+    calls = {"refresh": 0}
+
+    class FakeCreds:
+        def __init__(self, *args, **kwargs):
+            self.token = None
+            self.scopes = kwargs.get("scopes")
+
+        def refresh(self, request):
+            calls["refresh"] += 1
+            self.token = "fake-access-token"
+
+    monkeypatch.setattr(youtube_service, "Credentials", FakeCreds)
 
     info = youtube_service.verify_credentials()
-    assert info == {"channel_id": "UC-fake-channel", "title": "Fake Channel"}
+    assert calls["refresh"] == 1
+    assert info["token_refreshed"] is True
+    assert "https://www.googleapis.com/auth/youtube.upload" in info["scopes"]
 
 
-def test_verify_credentials_raises_on_empty_items(monkeypatch, patched_env):
+def test_verify_credentials_raises_on_bad_refresh_token(monkeypatch, patched_env):
     from app.services import youtube_service
     from app.services.youtube_service import YouTubeUploadError
 
-    _install_fake_build(monkeypatch, queue=[], channels_payload={"items": []})
+    class BrokenCreds:
+        def __init__(self, *args, **kwargs):
+            pass
 
-    with pytest.raises(YouTubeUploadError, match="no items"):
+        def refresh(self, request):
+            raise RuntimeError("invalid_grant: Token has been expired or revoked")
+
+    monkeypatch.setattr(youtube_service, "Credentials", BrokenCreds)
+
+    with pytest.raises(YouTubeUploadError, match="invalid_grant"):
         youtube_service.verify_credentials()
