@@ -102,8 +102,13 @@ class FakeGenaiClient:
 
 @pytest.fixture
 def patched_env(monkeypatch, tmp_path: Path):
-    """Fake GEMINI_API_KEY, isolated quota state, redirected generated/rendered dirs."""
+    """Fake GEMINI_API_KEY, isolated quota state, redirected generated/rendered dirs.
+
+    Also pins IMAGE_PROVIDER=pollinations so the test assumptions about
+    primary/fallback order don't depend on the developer's local .env.
+    """
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    monkeypatch.setattr("app.config.IMAGE_PROVIDER", "pollinations")
     generated = tmp_path / "generated"
     rendered = tmp_path / "rendered"
     monkeypatch.setattr("app.utils.filepaths.GENERATED_DIR", generated)

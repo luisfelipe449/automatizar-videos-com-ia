@@ -203,6 +203,13 @@ def upload_short(
             "description": _ensure_shorts_hashtag(script.description),
             "tags": list(script.tags),
             "categoryId": _CATEGORY_PEOPLE_AND_BLOGS,
+            # Mark the video's metadata + audio track as English (BCP-47).
+            # Matches the script_service system prompt (English-only output)
+            # and caption_service Whisper (language="en"). YouTube uses
+            # these for auto-captions, recommendations, and the "Video
+            # language" field in the details panel.
+            "defaultLanguage": "en",
+            "defaultAudioLanguage": "en",
         },
         "status": {
             "privacyStatus": privacy,
