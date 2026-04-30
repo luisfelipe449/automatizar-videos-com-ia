@@ -123,18 +123,30 @@ def test_escape_drawtext_handles_colons_quotes_backslashes():
     raw = "O'Connor: 50% off\\test"
     escaped = _escape_drawtext(raw)
 
-    # Each delicate char gets a preceding backslash...
-    assert "\\'" in escaped
+    # Colon, percent, and backslash all get an escape.
     assert "\\:" in escaped
     assert "\\%" in escaped
-    # ...and the lone backslash in the input becomes an escaped pair.
+    # Backslash in the input becomes an escaped pair.
     assert "\\\\" in escaped
     # No bare colon should remain — every `:` MUST be escaped.
     unescaped_colons = escaped.replace("\\:", "")
     assert ":" not in unescaped_colons
-    # No bare single-quote should leak through either.
-    unescaped_quotes = escaped.replace("\\'", "")
-    assert "'" not in unescaped_quotes
+    # Single quote uses the quote-toggle trick: '\'' closes-out-reopens the
+    # surrounding single-quoted argument, which is how ffmpeg accepts a
+    # literal apostrophe. A bare `\'` would NOT be interpreted correctly.
+    assert "'\\''" in escaped
+
+
+def test_escape_drawtext_apostrophe_regression():
+    """Regression: names like "Kitti's Hog-nosed Bat" used to break ffmpeg.
+
+    The old escape (`\'`) closed the drawtext text='...' wrapper, and the
+    parser tripped on the orphan `s Hog-nosed Bat`. The fix uses the shell-
+    style '\\'' toggle so the literal apostrophe survives intact.
+    """
+    escaped = _escape_drawtext("Kitti's Hog-nosed Bat")
+    # Expected exact output: Kitti'\''s Hog-nosed Bat
+    assert escaped == "Kitti'\\''s Hog-nosed Bat"
 
 
 def test_build_rank_overlay_when_unranked_is_empty():

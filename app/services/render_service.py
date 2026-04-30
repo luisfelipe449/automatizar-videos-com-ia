@@ -89,24 +89,33 @@ def _escape_subtitle_path(p: Path) -> str:
 def _escape_drawtext(text: str) -> str:
     r"""Return a drawtext-safe representation of `text`.
 
-    The `drawtext` filter has its own escaping rules, distinct from `subtitles=`:
-    inside a single-quoted `text='...'` argument, the filter parser still
-    interprets ``\`` as an escape char and ``:`` as an argument separator at
-    the graph level, plus ``%`` triggers text expansion. To make literal text
-    safe we:
-      - escape backslashes FIRST (so subsequent escape chars aren't double-escaped)
-      - escape the text-expansion percent sign
-      - escape single quotes (they'd close the `text='...'` wrapper)
-      - escape colons (the filter-arg separator)
+    Two layers of escaping apply when this string is inserted into
+    ``...text='<this>'...`` inside a filter_complex argument:
+
+    1. **Shell-like quoting layer**: single quotes wrap the value, so a
+       literal ``'`` must be written as ``'\''`` (close quote, escaped quote,
+       reopen quote). Do this FIRST, before any backslash mangling.
+    2. **Filter-arg layer**: ``:`` separates args, ``\`` is an escape char, and
+       ``%`` triggers drawtext's text-expansion. Escape each with a backslash.
+
+    Backslashes themselves are NOT doubled — drawtext reads the string after
+    the filter parser has consumed one level of backslash escapes, so passing
+    a raw ``\`` through would be interpreted as starting an escape sequence.
+    Whisper output is plain Latin text, so backslashes are extremely unlikely;
+    we still escape them as ``\\`` for safety.
     """
-    # Order matters: backslash first so our own inserted escapes aren't
-    # themselves re-escaped on a second pass.
+    # Order matters and is tricky:
+    # 1. Escape backslashes FIRST — before we inject our own.
+    # 2. Escape colon and percent for the filter-arg layer.
+    # 3. LAST: replace bare single quotes with the quote-toggle sequence
+    #    "'\\''". This has to come last because the replacement itself
+    #    contains a backslash that MUST NOT be re-escaped.
     return (
         text
         .replace("\\", "\\\\")
         .replace("%", "\\%")
-        .replace("'", "\\'")
         .replace(":", "\\:")
+        .replace("'", "'\\''")
     )
 
 
