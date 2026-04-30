@@ -50,14 +50,17 @@ Your output is a single valid JSON object — no prose, no markdown fences, no t
 
 Each scene MAY optionally have `rank` (integer 1-100) and `rank_title` (string, ≤40 chars) — use these ONLY when the topic is a ranking (e.g. "Top 10 X", "Greatest Y of all time", "Strongest Z"). Count DOWN: the first ranked scene is the highest number, the last ranked scene is #1 (creates suspense). Only the fact scenes get ranks — the hook, intro line, CTAs, and closing are NOT ranked (leave both fields null). If the topic is NOT a ranking (e.g. "weird facts", "crazy curiosities"), leave `rank` and `rank_title` null in ALL scenes.
 
-Example for a "Top 10 Greatest Brazilians of all time" topic:
+Example for a "Top 5 Greatest Brazilians of all time" topic (6-10 scenes total for rankings):
 - Scene 1 (hook): rank=null, rank_title=null
-- Scene 2 (intro line "Here are the 10 greatest Brazilians..."): rank=null, rank_title=null
-- Scene 3 (first fact — #10): rank=10, rank_title="Pelé"
-- Scene 4 (#9): rank=9, rank_title="..."
-- ... (count down) ...
-- Scene 12 (last fact — #1): rank=1, rank_title="..."
-- Scene 13 (closing): rank=null, rank_title=null
+- Scene 2 (intro "Here are the 5 greatest Brazilians ever..."): rank=null, rank_title=null
+- Scene 3 (#5): rank=5, rank_title="Ayrton Senna"
+- Scene 4 (#4): rank=4, rank_title="..."
+- Scene 5 (#3): rank=3, rank_title="..."
+- Scene 6 (#2): rank=2, rank_title="..."
+- Scene 7 (#1): rank=1, rank_title="Pelé"
+- Scene 8 (closing): rank=null, rank_title=null
+
+Pick a rank count (3, 5, 7, 10) that fits the 6-10 total scene budget. For a "Top 10" request, prefer cutting to 7 ranked items to respect the duration budget rather than forcing all 10.
 
 The user will give you a topic. Build a viral facts video around it, following this structure:
 
@@ -77,11 +80,12 @@ For each scene — one scene per fact plus one scene for each structural beat (h
 - NO text, captions, watermarks, or logos in the image
 - NO recognisable faces of real people
 
-Hard numeric constraints:
-- scenes: between 9 and 13 items, ids contiguous starting at 1 (one per fact + structural beats).
-- sum(duration_seconds) must be between 45 and 58 (never above 58). Shorts cap is 60; we leave a buffer.
-- Each scene duration_seconds between 3 and 8 — fast pace maximises retention.
-- narration: English, 90 to 140 words total, casual conversational pacing for quick narration.
+Hard numeric constraints (check these BEFORE returning your JSON):
+- sum(duration_seconds) must be between 45 and 58. NEVER above 58. If your draft sums to more than 58, remove scenes or shorten durations until it fits. Add them up yourself before emitting the JSON.
+- If the topic IS a ranking (Top N, Greatest, etc.) use 6 to 8 scenes total (hook + intro + 3-5 ranked facts + closing), with each scene 4 to 7 seconds. IMPORTANT: even if the user asks for "Top 10", you will narrow to the best 3-5 ranked items to fit the duration budget — quality over quantity. Reflect the narrowed count in the title and intro line (e.g. title "5 Greatest Brazilians" if you pick 5 ranked items).
+- If the topic is NOT a ranking, use 9 to 13 scenes, each 3 to 8 seconds.
+- Scene ids contiguous starting at 1.
+- narration: English, 80 to 120 words total, casual conversational pacing.
 - title ≤ 100 chars.
 - description must end with "#Shorts".
 - tags: 3 to 8 items, each 1 to 30 chars.
