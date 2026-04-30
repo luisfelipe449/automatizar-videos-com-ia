@@ -55,7 +55,7 @@ _ASS_BLACK = "&H00000000"
 # Font / sizing. Bebas Neue ships in assets/fonts/; libass picks it up via
 # the `fontsdir=` filter option from render_service.
 _ASS_FONTNAME = "Bebas Neue"
-_ASS_FONTSIZE = 56
+_ASS_FONTSIZE = 84
 
 # Layout: bottom-center (Alignment=2 in ASS numpad convention),
 # lifted ~300px off the bottom so it clears YouTube's Shorts UI chrome.
