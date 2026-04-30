@@ -210,12 +210,46 @@ def _via_imagen(image_prompt: str, job_id: str) -> bytes:
 # Public API
 # --------------------------------------------------------------------------- #
 
-def generate_scene_image(image_prompt: str, job_id: str, scene_id: int) -> Path:
-    """Produce `scene_XX.png` via Pollinations → Imagen fallback. Returns abs path.
+def _try_pollinations(image_prompt: str, job_id: str, artifact_path: Path, hash_path: Path, expected: str) -> Path | str:
+    """Try Pollinations; return artifact path on success, error string on failure."""
+    if quota.is_pollinations_unavailable(job_id):
+        return "pollinations: skipped (marked unavailable earlier)"
+    try:
+        data = _via_pollinations(image_prompt)
+        _write_png_safe(data, artifact_path)
+        cache.write_hash_file(hash_path, expected)
+        print(f"{_LOG_PREFIX} wrote {artifact_path} via pollinations ({len(data)} bytes)")
+        return artifact_path
+    except VisualGenerationError as exc:
+        quota.mark_pollinations_unavailable(job_id)
+        return f"pollinations: {exc}"
 
-    Cache-skips when hash(prompt) matches the sibling `.hash` file. Raises
-    `VisualGenerationError` if both providers fail OR if moderation rejects.
+
+def _try_imagen(image_prompt: str, job_id: str, artifact_path: Path, hash_path: Path, expected: str) -> Path | str:
+    """Try Imagen; return artifact path on success, error string on failure."""
+    if quota.is_imagen_unavailable(job_id):
+        return "imagen: skipped (marked unavailable earlier)"
+    try:
+        data = _via_imagen(image_prompt, job_id)
+        _write_png_safe(data, artifact_path)
+        cache.write_hash_file(hash_path, expected)
+        print(f"{_LOG_PREFIX} wrote {artifact_path} via imagen ({len(data)} bytes)")
+        return artifact_path
+    except VisualGenerationError as exc:
+        return f"imagen: {exc}"
+
+
+def generate_scene_image(image_prompt: str, job_id: str, scene_id: int) -> Path:
+    """Produce `scene_XX.png` via the configured primary provider, fall back to the
+    other on failure. Returns abs path.
+
+    Primary/fallback order is controlled by `config.IMAGE_PROVIDER`
+    (`pollinations` default, or `imagen`). Cache-skips when hash(prompt) matches
+    the sibling `.hash` file. Raises `VisualGenerationError` if both providers
+    fail OR if moderation rejects.
     """
+    from app import config
+
     filepaths.ensure_job_dirs(job_id)
     _moderate(image_prompt)
 
@@ -227,34 +261,18 @@ def generate_scene_image(image_prompt: str, job_id: str, scene_id: int) -> Path:
         print(f"{_LOG_PREFIX} cache hit {artifact_path}")
         return artifact_path
 
+    # Order providers by the configured primary.
+    if config.IMAGE_PROVIDER == "imagen":
+        providers = [_try_imagen, _try_pollinations]
+    else:
+        providers = [_try_pollinations, _try_imagen]
+
     attempts: list[str] = []
-
-    # --- Primary: Pollinations ---
-    if quota.is_pollinations_unavailable(job_id):
-        attempts.append("pollinations: skipped (marked unavailable earlier)")
-    else:
-        try:
-            data = _via_pollinations(image_prompt)
-            _write_png_safe(data, artifact_path)
-            cache.write_hash_file(hash_path, expected)
-            print(f"{_LOG_PREFIX} wrote {artifact_path} via pollinations ({len(data)} bytes)")
-            return artifact_path
-        except VisualGenerationError as exc:
-            quota.mark_pollinations_unavailable(job_id)
-            attempts.append(f"pollinations: {exc}")
-
-    # --- Fallback: Imagen ---
-    if quota.is_imagen_unavailable(job_id):
-        attempts.append("imagen: skipped (marked unavailable earlier)")
-    else:
-        try:
-            data = _via_imagen(image_prompt, job_id)
-            _write_png_safe(data, artifact_path)
-            cache.write_hash_file(hash_path, expected)
-            print(f"{_LOG_PREFIX} wrote {artifact_path} via imagen ({len(data)} bytes)")
-            return artifact_path
-        except VisualGenerationError as exc:
-            attempts.append(f"imagen: {exc}")
+    for provider in providers:
+        result = provider(image_prompt, job_id, artifact_path, hash_path, expected)
+        if isinstance(result, Path):
+            return result
+        attempts.append(result)
 
     summary = " | ".join(attempts) if attempts else "no providers attempted"
     raise VisualGenerationError(

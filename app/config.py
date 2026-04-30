@@ -42,6 +42,14 @@ YOUTUBE_REFRESH_TOKEN: str = os.getenv("YOUTUBE_REFRESH_TOKEN", "")
 LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq").strip().lower()
 
 # -----------------------------------------------------------------------------
+# Image provider selection for scene generation.
+# -----------------------------------------------------------------------------
+# One of: "pollinations" | "imagen". Default = pollinations (free, no key).
+# The OTHER provider is the fallback when the primary fails. Imagen requires
+# a paid Gemini plan + GEMINI_API_KEY.
+IMAGE_PROVIDER: str = os.getenv("IMAGE_PROVIDER", "pollinations").strip().lower()
+
+# -----------------------------------------------------------------------------
 # Model names (overridable via env).
 # -----------------------------------------------------------------------------
 GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
