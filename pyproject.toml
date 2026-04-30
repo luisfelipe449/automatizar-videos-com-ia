@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+markers = [
+    "slow: slow integration tests (real ffmpeg, network, etc.)",
+]
