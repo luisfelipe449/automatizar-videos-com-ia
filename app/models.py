@@ -19,6 +19,20 @@ class Scene(BaseModel):
     image_prompt: str = Field(min_length=1)
     # A single scene that runs longer than 30s is almost certainly a mistake.
     duration_seconds: int = Field(ge=1, le=30)
+    # Optional ranking overlay: when the topic is a Top-N / ranking video, the
+    # LLM fills in `rank` + `rank_title` on the fact scenes (not on the hook,
+    # intro, CTA, or closing). `render_service` then draws "10 - Pelé" at the
+    # top of the scene. Both fields must be set together or both null — see
+    # `_validate_rank_pair`. `rank_title` is ≤40 chars to keep the overlay
+    # readable on a 1080px wide Short.
+    rank: int | None = Field(default=None, ge=1, le=100)
+    rank_title: str | None = Field(default=None, min_length=1, max_length=40)
+
+    @model_validator(mode="after")
+    def _validate_rank_pair(self) -> "Scene":
+        if (self.rank is None) != (self.rank_title is None):
+            raise ValueError("rank and rank_title must both be set or both be null")
+        return self
 
 
 class Script(BaseModel):

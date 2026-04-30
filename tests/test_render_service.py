@@ -24,6 +24,8 @@ from app.services.render_service import (
     RenderError,
     _build_ffmpeg_command,
     _build_filter_graph,
+    _build_rank_overlay,
+    _escape_drawtext,
     _escape_subtitle_path,
     _pick_music_track,
     _scale_scene_durations,
@@ -110,6 +112,66 @@ def test_escape_subtitle_path_escapes_windows_drive_colon(tmp_path: Path):
     # (We only allow the single `\:` escape sequence.)
     cleaned = escaped.replace(r"\:", "")
     assert "\\" not in cleaned, f"unexpected backslash in {escaped!r}"
+
+
+# --------------------------------------------------------------------------- #
+# Unit: _escape_drawtext / _build_rank_overlay
+# --------------------------------------------------------------------------- #
+
+def test_escape_drawtext_handles_colons_quotes_backslashes():
+    # Mix of every token drawtext cares about: single quote, colon, percent, backslash.
+    raw = "O'Connor: 50% off\\test"
+    escaped = _escape_drawtext(raw)
+
+    # Each delicate char gets a preceding backslash...
+    assert "\\'" in escaped
+    assert "\\:" in escaped
+    assert "\\%" in escaped
+    # ...and the lone backslash in the input becomes an escaped pair.
+    assert "\\\\" in escaped
+    # No bare colon should remain — every `:` MUST be escaped.
+    unescaped_colons = escaped.replace("\\:", "")
+    assert ":" not in unescaped_colons
+    # No bare single-quote should leak through either.
+    unescaped_quotes = escaped.replace("\\'", "")
+    assert "'" not in unescaped_quotes
+
+
+def test_build_rank_overlay_when_unranked_is_empty():
+    scene = Scene(
+        id=1,
+        scene_text="hook",
+        image_prompt="p",
+        duration_seconds=4,
+    )
+    assert _build_rank_overlay(scene) == ""
+
+
+def test_build_rank_overlay_includes_drawtext_with_correct_text():
+    scene = Scene(
+        id=3,
+        scene_text="Pelé is the GOAT.",
+        image_prompt="p",
+        duration_seconds=5,
+        rank=10,
+        rank_title="Pelé",
+    )
+    overlay = _build_rank_overlay(scene)
+
+    # Leading comma so the fragment slots straight after zoompan.
+    assert overlay.startswith(",drawtext=")
+    # The composed on-screen text is present (with no colons, so escaping
+    # doesn't alter "10 - Pelé").
+    assert "text='10 - Pelé'" in overlay
+    # Style knobs from the spec: 120pt, black outline, top-80 position.
+    assert "fontsize=120" in overlay
+    assert "bordercolor=black" in overlay
+    assert "borderw=6" in overlay
+    assert "fontcolor=white" in overlay
+    assert "y=80" in overlay
+    # Font path references the bundled Bebas Neue TTF.
+    assert "BebasNeue-Regular.ttf" in overlay
+    assert "fontfile='" in overlay
 
 
 # --------------------------------------------------------------------------- #
@@ -266,6 +328,47 @@ def test_build_filter_graph_raises_on_empty_scenes(tmp_path: Path):
     spec.scenes.clear()
     with pytest.raises(ValueError):
         _build_filter_graph(spec)
+
+
+def test_filter_graph_with_ranked_scenes_embeds_drawtext(tmp_path: Path):
+    """Only ranked scenes emit drawtext; unranked neighbors stay clean."""
+    # 3 scenes: #1 and #3 unranked (hook + closing), #2 ranked (a fact).
+    scenes = [
+        Scene(id=1, scene_text="hook", image_prompt="p1", duration_seconds=2),
+        Scene(
+            id=2,
+            scene_text="Pelé is the GOAT.",
+            image_prompt="p2",
+            duration_seconds=3,
+            rank=10,
+            rank_title="Pelé",
+        ),
+        Scene(id=3, scene_text="closing", image_prompt="p3", duration_seconds=4),
+    ]
+    spec = RenderSpec(
+        job_id="test-job",
+        scenes=scenes,
+        image_paths=[tmp_path / f"s{i + 1}.png" for i in range(3)],
+        narration_path=tmp_path / "n.wav",
+        captions_path=tmp_path / "c.ass",
+        output_path=tmp_path / "out.mp4",
+    )
+    graph = _build_filter_graph(spec)
+
+    # Exactly one drawtext in the whole graph — the ranked fact scene.
+    assert graph.count("drawtext=") == 1
+    # The drawtext lives inside the SECOND scene's chain (the one ending [v1]),
+    # i.e. AFTER its zoompan and BEFORE the [v1] label closes that chain.
+    second_chain = next(
+        part for part in graph.split(";") if part.endswith("[v1]")
+    )
+    assert "drawtext=" in second_chain
+    assert "text='10 - Pelé'" in second_chain
+    # Unranked chains must NOT carry a drawtext (no rank ⇒ no overlay).
+    first_chain = next(part for part in graph.split(";") if part.endswith("[v0]"))
+    third_chain = next(part for part in graph.split(";") if part.endswith("[v2]"))
+    assert "drawtext=" not in first_chain
+    assert "drawtext=" not in third_chain
 
 
 def test_build_filter_graph_without_music_has_no_amix(tmp_path: Path):

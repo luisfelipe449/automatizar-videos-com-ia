@@ -103,3 +103,92 @@ def test_script_json_roundtrip_equal():
     original = Script(**_valid_script_kwargs())
     rebuilt = Script.model_validate_json(original.model_dump_json())
     assert rebuilt == original
+
+
+# --------------------------------------------------------------------------- #
+# Scene.rank / rank_title — optional ranking-overlay fields
+# --------------------------------------------------------------------------- #
+
+def test_scene_rank_pair_both_set_ok():
+    scene = Scene(
+        id=1,
+        scene_text="fact about Pelé",
+        image_prompt="a stadium at golden hour",
+        duration_seconds=5,
+        rank=10,
+        rank_title="Pelé",
+    )
+    assert scene.rank == 10
+    assert scene.rank_title == "Pelé"
+
+
+def test_scene_rank_pair_both_null_ok():
+    # Default behaviour (no ranking topic): fields are null and the scene still validates.
+    scene = Scene(
+        id=1,
+        scene_text="opening hook",
+        image_prompt="a neon-lit street",
+        duration_seconds=4,
+    )
+    assert scene.rank is None
+    assert scene.rank_title is None
+
+
+def test_scene_rank_only_number_rejected():
+    with pytest.raises(ValidationError, match="rank and rank_title"):
+        Scene(
+            id=1,
+            scene_text="a",
+            image_prompt="p",
+            duration_seconds=4,
+            rank=5,
+            rank_title=None,
+        )
+
+
+def test_scene_rank_only_title_rejected():
+    with pytest.raises(ValidationError, match="rank and rank_title"):
+        Scene(
+            id=1,
+            scene_text="a",
+            image_prompt="p",
+            duration_seconds=4,
+            rank=None,
+            rank_title="Pelé",
+        )
+
+
+def test_scene_rank_out_of_range():
+    # rank=0 is below the ge=1 floor.
+    with pytest.raises(ValidationError):
+        Scene(
+            id=1,
+            scene_text="a",
+            image_prompt="p",
+            duration_seconds=4,
+            rank=0,
+            rank_title="x",
+        )
+    # rank=101 is above the le=100 ceiling.
+    with pytest.raises(ValidationError):
+        Scene(
+            id=1,
+            scene_text="a",
+            image_prompt="p",
+            duration_seconds=4,
+            rank=101,
+            rank_title="x",
+        )
+
+
+def test_scene_rank_title_too_long():
+    # >40 chars — overlay wouldn't fit cleanly on a 1080px-wide Short.
+    with pytest.raises(ValidationError):
+        Scene(
+            id=1,
+            scene_text="a",
+            image_prompt="p",
+            duration_seconds=4,
+            rank=1,
+            rank_title="x" * 41,
+        )

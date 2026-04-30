@@ -15,7 +15,7 @@ import hashlib
 from pathlib import Path
 
 from app.config import ASSETS_DIR
-from app.models import RenderSpec
+from app.models import RenderSpec, Scene
 from app.utils.ffmpeg_helpers import (
     FFmpegError,
     ffmpeg_bin,
@@ -82,6 +82,56 @@ def _escape_subtitle_path(p: Path) -> str:
     return posix.replace(":", r"\:")
 
 
+def _escape_drawtext(text: str) -> str:
+    r"""Return a drawtext-safe representation of `text`.
+
+    The `drawtext` filter has its own escaping rules, distinct from `subtitles=`:
+    inside a single-quoted `text='...'` argument, the filter parser still
+    interprets ``\`` as an escape char and ``:`` as an argument separator at
+    the graph level, plus ``%`` triggers text expansion. To make literal text
+    safe we:
+      - escape backslashes FIRST (so subsequent escape chars aren't double-escaped)
+      - escape the text-expansion percent sign
+      - escape single quotes (they'd close the `text='...'` wrapper)
+      - escape colons (the filter-arg separator)
+    """
+    # Order matters: backslash first so our own inserted escapes aren't
+    # themselves re-escaped on a second pass.
+    return (
+        text
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("'", "\\'")
+        .replace(":", "\\:")
+    )
+
+
+def _build_rank_overlay(scene: Scene) -> str:
+    """Return a drawtext filter fragment for the rank overlay, or ''.
+
+    The fragment INCLUDES the leading comma so it slots straight after the
+    zoompan node in the per-scene chain. Empty string when the scene has no
+    rank (which is every scene for non-ranking topics, and the hook/intro/CTA/
+    closing scenes for ranking topics).
+
+    Visual spec: Bebas Neue ~120pt, top-center (y=80), white fill with a
+    6-px black outline. Matches the caption style so ranked shorts read as a
+    single design.
+    """
+    if scene.rank is None:
+        return ""
+    text = f"{scene.rank} - {scene.rank_title}"
+    escaped = _escape_drawtext(text)
+    # The drawtext `fontfile=` arg accepts the same forward-slash + escaped
+    # colon form that `subtitles=` uses on Windows, so we reuse the helper.
+    font = _escape_subtitle_path(_FONTS_DIR / "BebasNeue-Regular.ttf")
+    return (
+        f",drawtext=fontfile='{font}':text='{escaped}':"
+        f"fontcolor=white:fontsize=120:bordercolor=black:borderw=6:"
+        f"x=(w-text_w)/2:y=80"
+    )
+
+
 def _pick_music_track(job_id: str) -> Path | None:
     """Return a deterministic `*.mp3` track from `_MUSIC_DIR`, or None.
 
@@ -135,10 +185,15 @@ def _build_filter_graph(
         frames = max(1, int(round(dur * _FPS)))
         # Scale (preserving aspect, cropping overflow) so zoompan sees a
         # correctly sized frame regardless of the source image's aspect.
+        # The optional rank-overlay runs AFTER zoompan so the text isn't
+        # scaled/cropped along with the image, and BEFORE the xfade merge
+        # so it fades out with its own scene.
+        rank_overlay = _build_rank_overlay(scene)
         chain = (
             f"[{idx}:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
             f"crop={w}:{h},"
             f"zoompan=z='{_ZOOM_EXPR}':d={frames}:s={w}x{h}:fps={_FPS}"
+            f"{rank_overlay}"
             f"[v{idx}]"
         )
         chains.append(chain)

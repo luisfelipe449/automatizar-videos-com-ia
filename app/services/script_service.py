@@ -41,10 +41,23 @@ Your output is a single valid JSON object — no prose, no markdown fences, no t
       "id": 1,
       "scene_text": "the exact line of narration this scene covers (one fact or one structural beat)",
       "image_prompt": "detailed cinematic visual prompt for this beat",
-      "duration_seconds": 5
+      "duration_seconds": 5,
+      "rank": null,
+      "rank_title": null
     }
   ]
 }
+
+Each scene MAY optionally have `rank` (integer 1-100) and `rank_title` (string, ≤40 chars) — use these ONLY when the topic is a ranking (e.g. "Top 10 X", "Greatest Y of all time", "Strongest Z"). Count DOWN: the first ranked scene is the highest number, the last ranked scene is #1 (creates suspense). Only the fact scenes get ranks — the hook, intro line, CTAs, and closing are NOT ranked (leave both fields null). If the topic is NOT a ranking (e.g. "weird facts", "crazy curiosities"), leave `rank` and `rank_title` null in ALL scenes.
+
+Example for a "Top 10 Greatest Brazilians of all time" topic:
+- Scene 1 (hook): rank=null, rank_title=null
+- Scene 2 (intro line "Here are the 10 greatest Brazilians..."): rank=null, rank_title=null
+- Scene 3 (first fact — #10): rank=10, rank_title="Pelé"
+- Scene 4 (#9): rank=9, rank_title="..."
+- ... (count down) ...
+- Scene 12 (last fact — #1): rank=1, rank_title="..."
+- Scene 13 (closing): rank=null, rank_title=null
 
 The user will give you a topic. Build a viral facts video around it, following this structure:
 
