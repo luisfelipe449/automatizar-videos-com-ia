@@ -152,7 +152,7 @@ def test_malformed_json_triggers_validation_retry(monkeypatch, patched_env):
     retry_messages = FakeGroq.last_instance.calls[1]["messages"]
     assert len(retry_messages) == 3
     assert retry_messages[-1]["role"] == "system"
-    assert "inválida" in retry_messages[-1]["content"]
+    assert "invalid" in retry_messages[-1]["content"].lower()
 
 
 def test_two_invalid_attempts_raise_script_generation_error(monkeypatch, patched_env):

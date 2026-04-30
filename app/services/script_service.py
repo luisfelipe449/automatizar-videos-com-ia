@@ -22,35 +22,54 @@ from app.utils.retries import default_retry
 
 _LOG_PREFIX = "[script_service]"
 
-# Keep the schema tight — the model works best with a compact, explicit contract.
-_SYSTEM_PROMPT = """Você é um roteirista especializado em YouTube Shorts em português (PT-BR).
+# Single-pass prompt: LLM returns the full script AND one visual prompt per fact.
+# Style: "viral facts" English Shorts — fast, hooky, CTA-peppered, cinematic visuals.
+_SYSTEM_PROMPT = """You are a scriptwriter for viral English-language YouTube Shorts.
 
-Responda APENAS com JSON válido, sem texto adicional, seguindo EXATAMENTE este schema:
+Your output is a single valid JSON object — no prose, no markdown fences, no trailing text — matching EXACTLY this schema:
 
 {
-  "title": "string (≤100 caracteres)",
-  "description": "string terminando com #Shorts",
-  "tags": ["3 a 8 tags relevantes, 1-30 chars cada"],
-  "narration": "string com a narração completa em português",
+  "title": "string (≤100 chars, hook-style, no misleading clickbait)",
+  "description": "string ending with #Shorts",
+  "tags": ["3 to 8 relevant tags, 1-30 chars each, English"],
+  "narration": "the full narration, English, casual conversational tone",
   "scenes": [
     {
       "id": 1,
-      "scene_text": "texto curto da cena",
-      "image_prompt": "prompt visual detalhado e cinematográfico",
-      "duration_seconds": 4
+      "scene_text": "the exact line of narration this scene covers (one fact or one structural beat)",
+      "image_prompt": "detailed cinematic visual prompt for this beat",
+      "duration_seconds": 5
     }
   ]
 }
 
-Regras obrigatórias:
-- Entre 3 e 8 cenas, com ids contíguos começando em 1.
-- sum(duration_seconds) deve ficar entre 40 e 58 segundos (nunca acima de 58).
-- narration em português, ≤150 palavras, tom dinâmico para maximizar retenção.
-- title ≤100 caracteres, atrativo, sem clickbait enganoso.
-- description termina obrigatoriamente com #Shorts.
-- tags: lista com 3 a 8 itens, cada um entre 1 e 30 caracteres.
-- image_prompt: detalhado, cinematográfico, formato vertical 9:16, SEM texto ou legendas na imagem, SEM rostos reconhecíveis de pessoas reais.
-- NÃO inclua o campo job_id no JSON; ele é injetado pelo código.
+The user will give you a topic. Build a viral facts video around it, following this structure:
+
+1. Opening Hook: attention-grabbing statement or question that sparks curiosity.
+2. Intro Line: e.g. "Here are 10 facts to mess your brain" or "Here are 9 crazy facts you didn't know".
+3. Fact List: 8 to 12 interesting facts. State each fact clearly and concisely. Occasionally append parentheticals like "(Try this!)" or "(Try it!)" where applicable. Vary fact types across biology, history, geography, psychology, physics, animals, culture — mix well-known with lesser-known.
+4. CTA Insertions: sprinkle natural CTAs throughout, e.g. "if you want to be smarter every day — like and subscribe", "studies show that if you like and subscribe, you may become smarter".
+5. Emotional Hooks: include dramatic phrases like "the last one amazed me", "the last will blow your mind", "you didn't know this".
+6. Variety: cover diverse categories — physical/biological (organs, DNA, animals), geographic (landmarks, locations), historical (alphabet, traditions), interactive challenges, psychological/cultural.
+7. Closing: end with an emotional statement or reference to the most impressive fact.
+
+For each scene — one scene per fact plus one scene for each structural beat (hook, intro, CTAs, closing) — build a visual prompt with these rules:
+- cinematic, realistic style
+- vertical 9:16 framing
+- match the emotion of the line
+- keep characters/subjects consistent across scenes when they recur
+- NO text, captions, watermarks, or logos in the image
+- NO recognisable faces of real people
+
+Hard numeric constraints:
+- scenes: between 9 and 13 items, ids contiguous starting at 1 (one per fact + structural beats).
+- sum(duration_seconds) must be between 45 and 58 (never above 58). Shorts cap is 60; we leave a buffer.
+- Each scene duration_seconds between 3 and 8 — fast pace maximises retention.
+- narration: English, 90 to 140 words total, casual conversational pacing for quick narration.
+- title ≤ 100 chars.
+- description must end with "#Shorts".
+- tags: 3 to 8 items, each 1 to 30 chars.
+- DO NOT include a job_id field — it is injected by the pipeline.
 """
 
 
@@ -70,7 +89,9 @@ def _call_groq(client: Groq, messages: list[dict]) -> str:
         response_format={"type": "json_object"},
         messages=messages,
         temperature=0.7,
-        max_tokens=2000,
+        # 9-13 scenes × (scene_text + cinematic image_prompt) + narration
+        # + tags/title/description: comfortably inside 4096.
+        max_tokens=4096,
     )
     return response.choices[0].message.content or ""
 
@@ -111,7 +132,7 @@ def generate_script(prompt: str, *, job_id: str | None = None) -> Script:
 
     base_messages: list[dict] = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": f"Tema do Short: {prompt}"},
+        {"role": "user", "content": f"Topic for the Short: {prompt}"},
     ]
 
     # Attempt 1 — pristine prompt.
@@ -130,9 +151,9 @@ def generate_script(prompt: str, *, job_id: str | None = None) -> Script:
         {
             "role": "system",
             "content": (
-                "A tentativa anterior foi inválida. Erro: "
-                f"{first_error}. Gere novamente, respeitando ESTRITAMENTE o "
-                "schema e as regras. Responda APENAS com JSON válido."
+                "The previous attempt was invalid. Error: "
+                f"{first_error}. Regenerate the JSON, STRICTLY obeying the "
+                "schema and the rules. Respond with JSON only."
             ),
         }
     ]

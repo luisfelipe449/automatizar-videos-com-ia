@@ -266,7 +266,7 @@ def _call_whisper(client: Groq, narration_wav: Path) -> object:
             model=_WHISPER_MODEL,
             response_format="verbose_json",
             timestamp_granularities=["word"],
-            language="pt",
+            language="en",
         )
 
 

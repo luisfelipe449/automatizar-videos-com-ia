@@ -326,7 +326,7 @@ def test_happy_path_writes_valid_ass(monkeypatch, patched_env, tmp_path):
     assert call_kwargs["model"] == "whisper-large-v3"
     assert call_kwargs["response_format"] == "verbose_json"
     assert call_kwargs["timestamp_granularities"] == ["word"]
-    assert call_kwargs["language"] == "pt"
+    assert call_kwargs["language"] == "en"
 
 
 def test_empty_transcription_raises_caption_error(monkeypatch, patched_env, tmp_path):
