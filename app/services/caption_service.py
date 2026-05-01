@@ -26,6 +26,7 @@ Getting exact CapCut behaviour would require emitting N Dialogue lines per cue
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from groq import Groq
@@ -266,7 +267,7 @@ def _call_whisper(client: Groq, narration_wav: Path) -> object:
             model=_WHISPER_MODEL,
             response_format="verbose_json",
             timestamp_granularities=["word"],
-            language="en",
+            language=os.getenv("WHISPER_LANGUAGE", "en"),
         )
 
 

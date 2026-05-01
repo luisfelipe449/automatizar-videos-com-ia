@@ -25,6 +25,11 @@ from app.utils.retries import default_retry
 
 _LOG_PREFIX = "[script_service]"
 
+# Optional system-prompt override file. When SCRIPT_PROMPT_FILE points to an
+# existing file, its contents replace `_SYSTEM_PROMPT` for the run. Useful for
+# one-off experiments (e.g. a non-English pilot) without editing code.
+_OVERRIDE_ENV = "SCRIPT_PROMPT_FILE"
+
 # Single-pass prompt: LLM returns the full script AND one visual prompt per fact.
 # Style: "viral facts" English Shorts — fast, hooky, CTA-peppered, cinematic visuals.
 _SYSTEM_PROMPT = """You are a scriptwriter for viral English-language YouTube Shorts.
@@ -217,12 +222,23 @@ def generate_script(prompt: str, *, job_id: str | None = None) -> Script:
     If `job_id` is None, derives one via `filepaths.make_job_id(prompt)`.
     Raises `ScriptGenerationError` on unrecoverable failure.
     """
+    import os as _os
     resolved_job_id = job_id or filepaths.make_job_id(prompt)
     provider, client = _build_client()
-    print(f"{_LOG_PREFIX} provider={provider}")
+
+    # Optional override: if SCRIPT_PROMPT_FILE is set and exists, load its
+    # text as the system prompt (lets one-off runs use a completely different
+    # genre/language without editing the module).
+    override_path = _os.getenv(_OVERRIDE_ENV, "").strip()
+    if override_path and Path(override_path).is_file():
+        system_prompt = Path(override_path).read_text(encoding="utf-8")
+        print(f"{_LOG_PREFIX} provider={provider} prompt=OVERRIDE({override_path})")
+    else:
+        system_prompt = _SYSTEM_PROMPT
+        print(f"{_LOG_PREFIX} provider={provider}")
 
     base_messages: list[dict] = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Topic for the Short: {prompt}"},
     ]
 
