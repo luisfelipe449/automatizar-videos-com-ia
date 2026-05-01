@@ -1,0 +1,182 @@
+{% extends "base.html" %}
+
+{% block title %}Job {{ job.job_id }} - Video Automation{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <a href="/jobs" class="text-blue-600 hover:underline text-sm mb-2 inline-block">&larr; Back to Jobs</a>
+    <h1 class="text-3xl font-bold text-gray-900">Job Details</h1>
+    <p class="text-gray-600">{{ job.job_id }}</p>
+</div>
+
+<!-- Job Info Card -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <div>
+            <h3 class="text-sm font-medium text-gray-700 mb-1">Status</h3>
+            <span class="px-3 py-1 rounded-full text-sm font-medium
+                {% if job.status == 'completed' %}bg-green-100 text-green-800
+                {% elif job.status == 'running' %}bg-blue-100 text-blue-800
+                {% elif job.status == 'failed' %}bg-red-100 text-red-800
+                {% else %}bg-yellow-100 text-yellow-800{% endif %}">
+                {{ job.status }}
+            </span>
+        </div>
+
+        <div>
+            <h3 class="text-sm font-medium text-gray-700 mb-1">Current Stage</h3>
+            <p class="text-gray-900">{{ job.stage or 'Not started' }}</p>
+        </div>
+
+        <div>
+            <h3 class="text-sm font-medium text-gray-700 mb-1">Priority</h3>
+            <p class="text-gray-900">{{ job.priority }}</p>
+        </div>
+
+        <div>
+            <h3 class="text-sm font-medium text-gray-700 mb-1">Account</h3>
+            <p class="text-gray-900">{{ job.account.name if job.account else 'Not assigned' }}</p>
+        </div>
+
+        <div>
+            <h3 class="text-sm font-medium text-gray-700 mb-1">Created At</h3>
+            <p class="text-gray-900">{{ job.created_at.strftime('%Y-%m-%d %H:%M:%S') if job.created_at else '-' }}</p>
+        </div>
+
+        <div>
+            <h3 class="text-sm font-medium text-gray-700 mb-1">Started At</h3>
+            <p class="text-gray-900">{{ job.started_at.strftime('%Y-%m-%d %H:%M:%S') if job.started_at else '-' }}</p>
+        </div>
+
+        <div>
+            <h3 class="text-sm font-medium text-gray-700 mb-1">Completed At</h3>
+            <p class="text-gray-900">{{ job.completed_at.strftime('%Y-%m-%d %H:%M:%S') if job.completed_at else '-' }}</p>
+        </div>
+
+        <div>
+            <h3 class="text-sm font-medium text-gray-700 mb-1">Duration</h3>
+            <p class="text-gray-900">
+                {% if job.started_at and job.completed_at %}
+                    {{ ((job.completed_at - job.started_at).total_seconds() / 60) | round(2) }} min
+                {% elif job.started_at %}
+                    Running...
+                {% else %}
+                    -
+                {% endif %}
+            </p>
+        </div>
+    </div>
+
+    <div class="mt-6">
+        <h3 class="text-sm font-medium text-gray-700 mb-1">Prompt</h3>
+        <p class="text-gray-900 whitespace-pre-wrap bg-gray-50 p-4 rounded border">{{ job.prompt }}</p>
+    </div>
+
+    {% if job.error_message %}
+    <div class="mt-6">
+        <h3 class="text-sm font-medium text-gray-700 mb-1">Error Message</h3>
+        <div class="bg-red-50 border border-red-200 text-red-800 p-4 rounded">
+            {{ job.error_message }}
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<!-- Pipeline Progress -->
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-xl font-bold text-gray-900 mb-4">Pipeline Progress</h2>
+    <div class="space-y-3">
+        {% set stages = ['script', 'tts', 'captions', 'visual', 'render', 'upload'] %}
+        {% for stage in stages %}
+        <div class="flex items-center">
+            <div class="flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center
+                {% if job.stage and stages.index(job.stage) >= stages.index(stage) %}
+                    {% if job.status == 'completed' %}bg-green-500
+                    {% elif job.status == 'running' %}bg-blue-500
+                    {% elif job.status == 'failed' %}bg-red-500
+                    {% else %}bg-yellow-500{% endif %}
+                {% else %}bg-gray-300{% endif %}
+                text-white font-medium text-sm">
+                {% if job.stage and stages.index(job.stage) > stages.index(stage) %}✓
+                {% elif job.stage == stage %}•
+                {% else %}&nbsp;{% endif %}
+            </div>
+            <div class="ml-4 flex-1">
+                <p class="text-sm font-medium text-gray-900 capitalize">{{ stage }}</p>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Uploads -->
+{% if job.uploads %}
+<div class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-xl font-bold text-gray-900 mb-4">YouTube Uploads</h2>
+    <div class="space-y-4">
+        {% for upload in job.uploads %}
+        <div class="border rounded-lg p-4">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <h3 class="text-sm font-medium text-gray-700 mb-1">Video ID</h3>
+                    <a href="https://youtube.com/watch?v={{ upload.video_id }}" target="_blank" class="text-blue-600 hover:underline">
+                        {{ upload.video_id }}
+                    </a>
+                </div>
+                <div>
+                    <h3 class="text-sm font-medium text-gray-700 mb-1">Title</h3>
+                    <p class="text-gray-900">{{ upload.title }}</p>
+                </div>
+                <div>
+                    <h3 class="text-sm font-medium text-gray-700 mb-1">Privacy</h3>
+                    <p class="text-gray-900">{{ upload.privacy_status }}</p>
+                </div>
+                <div>
+                    <h3 class="text-sm font-medium text-gray-700 mb-1">Views</h3>
+                    <p class="text-gray-900">{{ upload.views }}</p>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endif %}
+
+<!-- Actions -->
+<div class="bg-white rounded-lg shadow p-6">
+    <h2 class="text-xl font-bold text-gray-900 mb-4">Actions</h2>
+    <div class="flex space-x-4">
+        {% if job.status == 'failed' %}
+        <form method="POST" action="/jobs/{{ job.job_id }}/retry">
+            <button type="submit" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded">
+                Retry Job
+            </button>
+        </form>
+        {% endif %}
+        <a href="/jobs" class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-medium py-2 px-4 rounded">
+            Back to Jobs
+        </a>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Poll for job status updates if job is running
+    {% if job.status in ['pending', 'running'] %}
+    setInterval(async () => {
+        try {
+            const response = await fetch('/api/jobs/{{ job.job_id }}/status');
+            const data = await response.json();
+
+            if (data.status !== '{{ job.status }}' || data.stage !== '{{ job.stage }}') {
+                // Reload page if status or stage changed
+                window.location.reload();
+            }
+        } catch (error) {
+            console.error('Failed to poll job status:', error);
+        }
+    }, 5000); // Poll every 5 seconds
+    {% endif %}
+</script>
+{% endblock %}

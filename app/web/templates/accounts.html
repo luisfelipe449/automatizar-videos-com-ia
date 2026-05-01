@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+
+{% block title %}Accounts - Video Automation{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex justify-between items-center">
+    <div>
+        <h1 class="text-3xl font-bold text-gray-900">YouTube Accounts</h1>
+        <p class="text-gray-600">Manage OAuth credentials and quota</p>
+    </div>
+    <a href="/accounts/new" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded">
+        Add Account
+    </a>
+</div>
+
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    <table class="min-w-full">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="text-left py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Name</th>
+                <th class="text-left py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Email</th>
+                <th class="text-left py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Status</th>
+                <th class="text-right py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Quota Used</th>
+                <th class="text-right py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Quota Limit</th>
+                <th class="text-left py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Quota Reset</th>
+                <th class="text-center py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Actions</th>
+            </tr>
+        </thead>
+        <tbody class="bg-white divide-y divide-gray-200">
+            {% for account in accounts %}
+            <tr class="hover:bg-gray-50">
+                <td class="py-4 px-6 text-sm font-medium text-gray-900">{{ account.name }}</td>
+                <td class="py-4 px-6 text-sm text-gray-600">{{ account.email }}</td>
+                <td class="py-4 px-6 text-sm">
+                    {% if account.is_active %}
+                    <span class="px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                        Active
+                    </span>
+                    {% else %}
+                    <span class="px-2 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                        Inactive
+                    </span>
+                    {% endif %}
+                </td>
+                <td class="py-4 px-6 text-sm text-right text-gray-900">{{ account.quota_used }}</td>
+                <td class="py-4 px-6 text-sm text-right text-gray-900">{{ account.daily_quota }}</td>
+                <td class="py-4 px-6 text-sm text-gray-600">
+                    {{ account.quota_reset_at.strftime('%Y-%m-%d %H:%M') if account.quota_reset_at else '-' }}
+                </td>
+                <td class="py-4 px-6 text-sm text-center">
+                    <form method="POST" action="/accounts/{{ account.id }}/toggle" class="inline">
+                        <button type="submit" class="text-blue-600 hover:text-blue-800 font-medium">
+                            {% if account.is_active %}Disable{% else %}Enable{% endif %}
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+{% if not accounts %}
+<div class="bg-white rounded-lg shadow p-8 text-center">
+    <p class="text-gray-600 mb-4">No accounts configured yet.</p>
+    <a href="/accounts/new" class="text-blue-600 hover:underline">Add your first account</a>
+</div>
+{% endif %}
+{% endblock %}
