@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Video Automation{% endblock %}
+
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-3xl font-bold text-gray-900">Dashboard</h1>
+    <p class="text-gray-600">Multi-account video automation overview</p>
+</div>
+
+<!-- Stats Cards -->
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 mb-6">
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="text-sm text-gray-600 mb-1">Total Accounts</div>
+        <div class="text-3xl font-bold text-gray-900">{{ total_accounts }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="text-sm text-gray-600 mb-1">Active Accounts</div>
+        <div class="text-3xl font-bold text-green-600">{{ active_accounts }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="text-sm text-gray-600 mb-1">Quota Available</div>
+        <div class="text-3xl font-bold text-blue-600">{{ total_quota_available }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="text-sm text-gray-600 mb-1">Pending Jobs</div>
+        <div class="text-3xl font-bold text-yellow-600">{{ pending_jobs_count }}</div>
+    </div>
+    <div class="bg-white rounded-lg shadow p-6">
+        <div class="text-sm text-gray-600 mb-1">Running Jobs</div>
+        <div class="text-3xl font-bold text-purple-600">{{ running_jobs_count }}</div>
+    </div>
+</div>
+
+<!-- Charts Row -->
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <!-- Job Status Chart -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-xl font-bold text-gray-900 mb-4">Job Status (Last 7 Days)</h2>
+        <canvas id="jobStatusChart"></canvas>
+    </div>
+
+    <!-- Account Stats -->
+    <div class="bg-white rounded-lg shadow p-6">
+        <h2 class="text-xl font-bold text-gray-900 mb-4">Account Statistics</h2>
+        <div class="overflow-auto max-h-80">
+            <table class="min-w-full">
+                <thead>
+                    <tr class="border-b">
+                        <th class="text-left py-2 px-4 text-sm font-medium text-gray-700">Account</th>
+                        <th class="text-right py-2 px-4 text-sm font-medium text-gray-700">Uploads</th>
+                        <th class="text-right py-2 px-4 text-sm font-medium text-gray-700">Views</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for stat in account_stats %}
+                    <tr class="border-b hover:bg-gray-50">
+                        <td class="py-2 px-4 text-sm">{{ stat.account_name }}</td>
+                        <td class="py-2 px-4 text-sm text-right">{{ stat.upload_count }}</td>
+                        <td class="py-2 px-4 text-sm text-right">{{ stat.total_views }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Jobs -->
+<div class="bg-white rounded-lg shadow p-6">
+    <h2 class="text-xl font-bold text-gray-900 mb-4">Recent Jobs</h2>
+    <div class="overflow-x-auto">
+        <table class="min-w-full">
+            <thead>
+                <tr class="border-b">
+                    <th class="text-left py-2 px-4 text-sm font-medium text-gray-700">Job ID</th>
+                    <th class="text-left py-2 px-4 text-sm font-medium text-gray-700">Prompt</th>
+                    <th class="text-left py-2 px-4 text-sm font-medium text-gray-700">Status</th>
+                    <th class="text-left py-2 px-4 text-sm font-medium text-gray-700">Stage</th>
+                    <th class="text-left py-2 px-4 text-sm font-medium text-gray-700">Created</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in recent_jobs %}
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="py-2 px-4 text-sm">
+                        <a href="/jobs/{{ job.job_id }}" class="text-blue-600 hover:underline">
+                            {{ job.job_id }}
+                        </a>
+                    </td>
+                    <td class="py-2 px-4 text-sm">{{ job.prompt[:50] }}{% if job.prompt|length > 50 %}...{% endif %}</td>
+                    <td class="py-2 px-4 text-sm">
+                        <span class="px-2 py-1 rounded-full text-xs font-medium
+                            {% if job.status == 'completed' %}bg-green-100 text-green-800
+                            {% elif job.status == 'running' %}bg-blue-100 text-blue-800
+                            {% elif job.status == 'failed' %}bg-red-100 text-red-800
+                            {% else %}bg-yellow-100 text-yellow-800{% endif %}">
+                            {{ job.status }}
+                        </span>
+                    </td>
+                    <td class="py-2 px-4 text-sm">{{ job.stage or '-' }}</td>
+                    <td class="py-2 px-4 text-sm text-gray-600">{{ job.created_at.strftime('%Y-%m-%d %H:%M') if job.created_at else '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    // Job Status Chart
+    const ctx = document.getElementById('jobStatusChart').getContext('2d');
+    new Chart(ctx, {
+        type: 'line',
+        data: {
+            labels: {{ chart_labels | tojson }},
+            datasets: [
+                {
+                    label: 'Completed',
+                    data: {{ chart_data.completed | tojson }},
+                    borderColor: 'rgb(34, 197, 94)',
+                    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+                    tension: 0.4
+                },
+                {
+                    label: 'Failed',
+                    data: {{ chart_data.failed | tojson }},
+                    borderColor: 'rgb(239, 68, 68)',
+                    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                    tension: 0.4
+                },
+                {
+                    label: 'Pending',
+                    data: {{ chart_data.pending | tojson }},
+                    borderColor: 'rgb(234, 179, 8)',
+                    backgroundColor: 'rgba(234, 179, 8, 0.1)',
+                    tension: 0.4
+                }
+            ]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            plugins: {
+                legend: {
+                    position: 'bottom',
+                }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    ticks: {
+                        stepSize: 1
+                    }
+                }
+            }
+        }
+    });
+</script>
+{% endblock %}
