@@ -53,6 +53,10 @@ class YouTubeUploadError(RuntimeError):
     """Raised when the upload cannot complete (auth, validation, or API error)."""
 
 
+class YouTubeQuotaExceeded(YouTubeUploadError):
+    """Raised when YouTube API quota is exceeded during upload."""
+
+
 # --------------------------------------------------------------------------- #
 # Helpers (pure where possible)
 # --------------------------------------------------------------------------- #
@@ -151,6 +155,14 @@ def _next_chunk_with_retry(request):
         # Either non-retryable from the start, or retries exhausted.
         status = _http_status(exc)
         reason = getattr(getattr(exc, "resp", None), "reason", "") or ""
+
+        # Check if this is a quota exceeded error
+        exc_str = str(exc).lower()
+        if status == 403 and ("quota" in exc_str or "quotaexceeded" in reason.lower()):
+            raise YouTubeQuotaExceeded(
+                f"YouTube API quota exceeded (status={status}): {exc}"
+            ) from exc
+
         raise YouTubeUploadError(
             f"YouTube API error (status={status}, reason={reason!r}): {exc}"
         ) from exc
