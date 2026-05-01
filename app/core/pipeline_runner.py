@@ -151,7 +151,11 @@ class PipelineRunner:
                 self.account_mgr.consume_quota(account_id=account.id, amount=1600)
             else:
                 # Pipeline returned failure
-                last_stage = result["stages_completed"][-1] if result["stages_completed"] else None
+                # Check if video was rendered (for manual upload option)
+                stages_completed = result["stages_completed"] if result["stages_completed"] else []
+                last_stage = stages_completed[-1] if stages_completed else None
+
+                # Mark as failed but preserve stage info for manual upload
                 self.job_queue.update_status(
                     job_id=job_id,
                     status="failed",
@@ -160,11 +164,13 @@ class PipelineRunner:
                 )
 
         except YouTubeQuotaExceeded as exc:
-            # Quota exceeded during upload - mark as failed with clear error
+            # Quota exceeded during upload - mark as failed but video is available for manual upload
+            # The stage should be 'render' (last successful stage before upload)
             self.job_queue.update_status(
                 job_id=job_id,
                 status="failed",
-                error=f"YouTube quota exceeded for account '{account.name}'. Please try again later or use a different account."
+                stage="render",  # Video was rendered successfully
+                error=f"YouTube quota exceeded for account '{account.name}'. Video is available for manual upload."
             )
 
         except Exception as exc:

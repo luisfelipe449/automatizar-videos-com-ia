@@ -1,13 +1,16 @@
 """Job queue routes: list, create, detail, retry."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from fastapi import APIRouter, Request, Depends, Form, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, FileResponse
 from fastapi.templating import Jinja2Templates
 
 from app.web.dependencies import get_job_queue_manager, get_db
 from app.core.job_queue import JobQueueManager, JobQueueError
 from app.db.models import Job
+from app.utils import filepaths
 from sqlalchemy.orm import Session
 
 
@@ -109,11 +112,27 @@ def job_detail(
     if not job:
         raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
+    # Check if video file exists for manual upload
+    video_path = filepaths.final_video_path(job_id)
+    video_exists = video_path.exists() if video_path else False
+
+    # Load script data for title and description
+    script_data = None
+    if video_exists:
+        script_path = filepaths.script_path(job_id)
+        if script_path and script_path.exists():
+            try:
+                script_data = json.loads(script_path.read_text(encoding='utf-8'))
+            except Exception:
+                script_data = None
+
     return templates.TemplateResponse(
         request=request,
         name="job_detail.html",
         context={
             "job": job,
+            "video_exists": video_exists,
+            "script_data": script_data,
         }
     )
 
@@ -137,3 +156,34 @@ def retry_job(
         return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
     except JobQueueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/{job_id}/download")
+def download_video(
+    job_id: str,
+    db: Session = Depends(get_db),
+):
+    """Download rendered video for manual upload.
+
+    Args:
+        job_id: Job ID
+        db: Database session
+
+    Returns:
+        Video file download
+    """
+    job = db.query(Job).filter_by(job_id=job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    # Check if video exists
+    video_path = filepaths.final_video_path(job_id)
+    if not video_path or not video_path.exists():
+        raise HTTPException(status_code=404, detail=f"Video file not found for job {job_id}")
+
+    # Return video file for download
+    return FileResponse(
+        path=str(video_path),
+        media_type="video/mp4",
+        filename=f"{job_id}.mp4"
+    )
