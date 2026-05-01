@@ -8,6 +8,27 @@
     <p class="text-gray-600">Configure YouTube OAuth credentials</p>
 </div>
 
+<!-- OAuth Recommendation -->
+<div class="mb-6 bg-green-50 border-2 border-green-300 rounded-lg p-4">
+    <div class="flex items-start">
+        <svg class="w-6 h-6 text-green-600 mt-0.5 mr-3 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+        </svg>
+        <div class="flex-1">
+            <h3 class="text-lg font-bold text-green-900 mb-2">💡 Easier way: Use OAuth!</h3>
+            <p class="text-green-800 mb-3">
+                Instead of manually entering credentials, you can use our <strong>OAuth flow</strong> which automatically handles everything for you.
+            </p>
+            <a href="/accounts/oauth/start" class="inline-flex items-center bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded">
+                <svg class="w-5 h-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" />
+                </svg>
+                Add Account via OAuth
+            </a>
+        </div>
+    </div>
+</div>
+
 <div class="bg-white rounded-lg shadow p-6 max-w-2xl">
     {% if error %}
     <div class="mb-4 p-4 bg-red-100 border border-red-400 text-red-700 rounded">
@@ -123,12 +144,14 @@
 </div>
 
 <div class="mt-6 bg-blue-50 border border-blue-200 rounded-lg p-4 max-w-2xl">
-    <h3 class="text-sm font-medium text-blue-900 mb-2">Getting OAuth Credentials</h3>
-    <ol class="text-sm text-blue-800 list-decimal list-inside space-y-1">
-        <li>Go to Google Cloud Console and create a project</li>
-        <li>Enable YouTube Data API v3</li>
-        <li>Create OAuth 2.0 credentials (Desktop app)</li>
-        <li>Use oauth2.py script to generate refresh token</li>
-    </ol>
+    <h3 class="text-sm font-medium text-blue-900 mb-2">📋 Manual Setup Instructions</h3>
+    <p class="text-sm text-blue-800 mb-2">
+        If you prefer manual setup, follow the guide:
+        <a href="/docs/GCP_OAUTH_SETUP.md" target="_blank" class="underline font-medium">GCP OAuth Setup Guide</a>
+    </p>
+    <p class="text-xs text-blue-700">
+        <strong>Tip:</strong> For first-time setup, configure OAuth Web credentials in Google Cloud Console,
+        then use the "Add via OAuth" button which is much easier!
+    </p>
 </div>
 {% endblock %}

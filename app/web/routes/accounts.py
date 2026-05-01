@@ -1,9 +1,12 @@
 """Account management routes: CRUD operations."""
 from __future__ import annotations
 
+import os
+import secrets
 from fastapi import APIRouter, Request, Depends, Form, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from google_auth_oauthlib.flow import Flow
 
 from app.web.dependencies import get_account_manager
 from app.core.account_manager import AccountManager, AccountManagerError
@@ -11,6 +14,13 @@ from app.core.account_manager import AccountManager, AccountManagerError
 
 router = APIRouter()
 templates = Jinja2Templates(directory="app/web/templates")
+
+# OAuth configuration
+SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+REDIRECT_URI = "http://127.0.0.1:8000/accounts/oauth/callback"
+
+# Store states temporarily (in production, use Redis or database)
+_oauth_states = {}
 
 
 @router.get("/", response_class=HTMLResponse)
@@ -115,3 +125,140 @@ def toggle_account(
         return RedirectResponse(url="/accounts", status_code=303)
     except AccountManagerError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/oauth/start")
+def start_oauth_flow(request: Request):
+    """Start OAuth flow for adding account.
+
+    Returns:
+        Redirect to Google OAuth consent screen
+    """
+    client_id = os.getenv("YOUTUBE_WEB_CLIENT_ID")
+    client_secret = os.getenv("YOUTUBE_WEB_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="OAuth credentials not configured. Set YOUTUBE_WEB_CLIENT_ID and YOUTUBE_WEB_CLIENT_SECRET in .env"
+        )
+
+    # Create OAuth flow
+    flow = Flow.from_client_config(
+        client_config={
+            "web": {
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [REDIRECT_URI],
+            }
+        },
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI,
+    )
+
+    # Generate state for CSRF protection
+    state = secrets.token_urlsafe(32)
+    authorization_url, _ = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",
+        state=state,
+    )
+
+    # Store flow in temporary storage
+    _oauth_states[state] = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+    }
+
+    return RedirectResponse(url=authorization_url)
+
+
+@router.get("/oauth/callback")
+def oauth_callback(
+    request: Request,
+    state: str,
+    code: str | None = None,
+    error: str | None = None,
+    account_mgr: AccountManager = Depends(get_account_manager),
+):
+    """Handle OAuth callback from Google.
+
+    Args:
+        request: FastAPI request
+        state: CSRF state token
+        code: Authorization code from Google
+        error: Error message if authorization failed
+        account_mgr: Account manager dependency
+
+    Returns:
+        Redirect to accounts list with success/error message
+    """
+    # Check for errors
+    if error:
+        raise HTTPException(status_code=400, detail=f"OAuth authorization failed: {error}")
+
+    # Verify state
+    if state not in _oauth_states:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state. Please try again.")
+
+    oauth_data = _oauth_states.pop(state)
+
+    # Exchange authorization code for tokens
+    flow = Flow.from_client_config(
+        client_config={
+            "web": {
+                "client_id": oauth_data["client_id"],
+                "client_secret": oauth_data["client_secret"],
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [REDIRECT_URI],
+            }
+        },
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI,
+    )
+
+    flow.fetch_token(code=code)
+    credentials = flow.credentials
+
+    # Get user info to extract email
+    import requests
+    userinfo_response = requests.get(
+        "https://www.googleapis.com/oauth2/v2/userinfo",
+        headers={"Authorization": f"Bearer {credentials.token}"},
+    )
+    userinfo = userinfo_response.json()
+    email = userinfo.get("email", "unknown@gmail.com")
+
+    # Generate account name from email
+    account_name = email.split("@")[0].replace(".", " ").title()
+
+    # Add account to database
+    try:
+        account_mgr.add_account(
+            name=account_name,
+            email=email,
+            client_id=oauth_data["client_id"],
+            client_secret=oauth_data["client_secret"],
+            refresh_token=credentials.refresh_token,
+            daily_quota=10000,
+        )
+        return RedirectResponse(url="/accounts?success=oauth", status_code=303)
+    except AccountManagerError as exc:
+        # If name exists, try with suffix
+        try:
+            import time
+            account_name_unique = f"{account_name} ({int(time.time()) % 10000})"
+            account_mgr.add_account(
+                name=account_name_unique,
+                email=email,
+                client_id=oauth_data["client_id"],
+                client_secret=oauth_data["client_secret"],
+                refresh_token=credentials.refresh_token,
+                daily_quota=10000,
+            )
+            return RedirectResponse(url="/accounts?success=oauth", status_code=303)
+        except AccountManagerError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
