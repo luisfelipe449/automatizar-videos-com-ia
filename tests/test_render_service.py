@@ -80,7 +80,7 @@ def _make_spec(
     return RenderSpec(
         job_id="test-job",
         scenes=scenes,
-        image_paths=image_paths,
+        scene_paths=image_paths,
         narration_path=narration,
         captions_path=captions,
         output_path=output,
@@ -360,7 +360,7 @@ def test_filter_graph_with_ranked_scenes_embeds_drawtext(tmp_path: Path):
     spec = RenderSpec(
         job_id="test-job",
         scenes=scenes,
-        image_paths=[tmp_path / f"s{i + 1}.png" for i in range(3)],
+        scene_paths=[tmp_path / f"s{i + 1}.png" for i in range(3)],
         narration_path=tmp_path / "n.wav",
         captions_path=tmp_path / "c.ass",
         output_path=tmp_path / "out.mp4",
@@ -523,6 +523,167 @@ def test_build_ffmpeg_command_zero_scenes_raises(tmp_path: Path):
 
 
 # --------------------------------------------------------------------------- #
+# Unit: video-scene branch (mp4 inputs)
+# --------------------------------------------------------------------------- #
+
+def _make_spec_with_mp4(
+    tmp_path: Path, *, durations: list[int]
+) -> RenderSpec:
+    """RenderSpec whose scene_paths are all `.mp4` video clips."""
+    n = len(durations)
+    scenes = [
+        Scene(
+            id=i + 1,
+            scene_text=f"scene {i + 1}",
+            image_prompt=f"prompt {i + 1}",
+            duration_seconds=durations[i],
+        )
+        for i in range(n)
+    ]
+    scene_paths = [tmp_path / f"scene_{i + 1:02d}.mp4" for i in range(n)]
+    return RenderSpec(
+        job_id="test-video",
+        scenes=scenes,
+        scene_paths=scene_paths,
+        narration_path=tmp_path / "narration.wav",
+        captions_path=tmp_path / "captions.ass",
+        output_path=tmp_path / "rendered" / "final.mp4",
+    )
+
+
+def test_build_filter_graph_video_scene_uses_scale_crop_setpts_tpad(tmp_path: Path):
+    """A `.mp4` scene must get scale/crop/setpts/tpad instead of zoompan."""
+    spec = _make_spec_with_mp4(tmp_path, durations=[7])  # 7s > 5s clip → needs padding
+    graph = _build_filter_graph(spec, durations=[7.0])
+
+    # Video branch emits scale + crop + setpts, NOT zoompan.
+    assert "scale=1080:1920" in graph
+    assert "crop=1080:1920" in graph
+    assert "setpts=PTS-STARTPTS" in graph
+    assert "zoompan" not in graph
+    # And a tpad stop_mode=clone segment that freezes to make up the delta
+    # between the 5s clip and the 7s target.
+    assert "tpad=stop_mode=clone" in graph
+    assert "stop_duration=2" in graph
+
+
+def test_build_filter_graph_video_scene_no_padding_when_fits(tmp_path: Path):
+    """When the scene target duration fits in the clip, tpad is omitted."""
+    spec = _make_spec_with_mp4(tmp_path, durations=[3])  # 3s <= 5s clip
+    graph = _build_filter_graph(spec, durations=[3.0])
+
+    assert "scale=1080:1920" in graph
+    assert "zoompan" not in graph
+    # No freeze-frame needed — omit tpad entirely to keep the graph tidy.
+    assert "tpad=" not in graph
+
+
+def test_build_filter_graph_mixed_video_and_image(tmp_path: Path):
+    """A mixed spec (scene 0 = mp4, scene 1 = png) emits two different chains."""
+    scenes = [
+        Scene(id=1, scene_text="s1", image_prompt="p1", duration_seconds=6),
+        Scene(id=2, scene_text="s2", image_prompt="p2", duration_seconds=4),
+    ]
+    spec = RenderSpec(
+        job_id="test-mix",
+        scenes=scenes,
+        scene_paths=[tmp_path / "scene_01.mp4", tmp_path / "scene_02.png"],
+        narration_path=tmp_path / "n.wav",
+        captions_path=tmp_path / "c.ass",
+        output_path=tmp_path / "out.mp4",
+    )
+    graph = _build_filter_graph(spec)
+
+    # Scene 0 (mp4) chain — has tpad, no zoompan.
+    first_chain = next(part for part in graph.split(";") if part.endswith("[v0]"))
+    assert "zoompan" not in first_chain
+    assert "tpad=stop_mode=clone" in first_chain
+    assert "setpts=PTS-STARTPTS" in first_chain
+
+    # Scene 1 (png) chain — uses zoompan as before.
+    second_chain = next(part for part in graph.split(";") if part.endswith("[v1]"))
+    assert "zoompan=" in second_chain
+    assert "tpad=" not in second_chain
+
+
+def test_build_ffmpeg_command_video_inputs_lack_loop_flags(tmp_path: Path):
+    """`.mp4` scenes must be passed as plain `-i path`, with no -framerate/-loop/-t."""
+    spec = _make_spec_with_mp4(tmp_path, durations=[5, 6])
+    cmd = _build_ffmpeg_command(spec, "/usr/bin/ffmpeg")
+
+    # No -loop / -framerate / -t for video inputs (the 3 still-image flags).
+    assert "-loop" not in cmd
+    # -framerate could still appear in other positions in principle, but
+    # not in any video-input phase of this spec.
+    assert "-framerate" not in cmd
+    # -t is only used as an image-input flag here; narration timing comes
+    # from the file itself and subtitles mix inline.
+    assert "-t" not in cmd
+
+    # Each mp4 path appears exactly once, preceded by -i.
+    mp4_i_positions = [
+        i for i, a in enumerate(cmd) if a == "-i" and cmd[i + 1].endswith(".mp4")
+    ]
+    # One narration-free: 2 scene mp4s + 1 output mp4 (at the END, not behind -i).
+    # Output path isn't behind a -i flag so it's excluded from mp4_i_positions.
+    assert len(mp4_i_positions) == 2
+    assert cmd[mp4_i_positions[0] + 1] == str(spec.scene_paths[0])
+    assert cmd[mp4_i_positions[1] + 1] == str(spec.scene_paths[1])
+
+    # Narration (.wav) is next.
+    wav_i_positions = [
+        i for i, a in enumerate(cmd) if a == "-i" and cmd[i + 1].endswith(".wav")
+    ]
+    assert len(wav_i_positions) == 1
+    assert wav_i_positions[0] > mp4_i_positions[-1]
+
+
+def test_build_ffmpeg_command_mixed_inputs(tmp_path: Path):
+    """Image scenes keep the -loop flags; video scenes don't."""
+    scenes = [
+        Scene(id=1, scene_text="s1", image_prompt="p1", duration_seconds=6),
+        Scene(id=2, scene_text="s2", image_prompt="p2", duration_seconds=4),
+    ]
+    spec = RenderSpec(
+        job_id="test-mix",
+        scenes=scenes,
+        scene_paths=[tmp_path / "scene_01.mp4", tmp_path / "scene_02.png"],
+        narration_path=tmp_path / "n.wav",
+        captions_path=tmp_path / "c.ass",
+        output_path=tmp_path / "out.mp4",
+    )
+    cmd = _build_ffmpeg_command(spec, "/usr/bin/ffmpeg")
+
+    # Exactly one -loop (for the png scene), followed by -i scene_02.png.
+    loop_positions = [i for i, a in enumerate(cmd) if a == "-loop"]
+    assert len(loop_positions) == 1
+    i = loop_positions[0]
+    # -framerate 1 -loop 1 -t 1 -i <png>
+    assert cmd[i - 2] == "-framerate"
+    assert cmd[i + 4] == "-i"
+    assert cmd[i + 5].endswith(".png")
+
+    # The mp4 must precede the png in the -i order (matches scene order).
+    mp4_i_positions = [
+        i for i, a in enumerate(cmd) if a == "-i" and cmd[i + 1].endswith(".mp4")
+    ]
+    png_i_positions = [
+        i for i, a in enumerate(cmd) if a == "-i" and cmd[i + 1].endswith(".png")
+    ]
+    assert len(mp4_i_positions) == 1
+    assert len(png_i_positions) == 1
+    assert mp4_i_positions[0] < png_i_positions[0]
+
+
+def test_render_short_missing_video_raises(tmp_path: Path):
+    """A missing .mp4 scene raises with a video-aware message."""
+    spec = _make_spec_with_mp4(tmp_path, durations=[3])
+    # Don't create the mp4 file — pre-flight must fail loudly.
+    with pytest.raises(RenderError, match="scene video not found"):
+        render_short(spec)
+
+
+# --------------------------------------------------------------------------- #
 # Unit: render_short pre-flight errors
 # --------------------------------------------------------------------------- #
 
@@ -535,7 +696,7 @@ def test_render_short_missing_image_raises(tmp_path: Path):
 def test_render_short_missing_narration_raises(tmp_path: Path):
     spec = _make_spec(tmp_path, n_scenes=1, create_files=False)
     # Create only the image so the error advances to narration.
-    for p in spec.image_paths:
+    for p in spec.scene_paths:
         p.write_bytes(b"\x89PNG\r\n\x1a\n")
     with pytest.raises(RenderError, match="narration not found"):
         render_short(spec)
@@ -651,7 +812,7 @@ def test_render_service_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             Scene(id=1, scene_text="a", image_prompt="p1", duration_seconds=1),
             Scene(id=2, scene_text="b", image_prompt="p2", duration_seconds=1),
         ],
-        image_paths=images,
+        scene_paths=images,
         narration_path=narration,
         captions_path=captions,
         output_path=output,
@@ -752,7 +913,7 @@ def test_render_service_smoke_with_music(
             Scene(id=1, scene_text="a", image_prompt="p1", duration_seconds=1),
             Scene(id=2, scene_text="b", image_prompt="p2", duration_seconds=1),
         ],
-        image_paths=images,
+        scene_paths=images,
         narration_path=narration,
         captions_path=captions,
         output_path=output,

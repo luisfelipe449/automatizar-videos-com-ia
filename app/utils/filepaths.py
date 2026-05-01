@@ -55,6 +55,21 @@ def scene_image_hash_path(job_id: str, scene_id: int) -> Path:
     return job_dir(job_id) / f"scene_{scene_id:02d}.hash"
 
 
+def scene_video_path(job_id: str, scene_id: int) -> Path:
+    """Absolute path of the per-scene MP4 clip when USE_VIDEO=true."""
+    return job_dir(job_id) / f"scene_{scene_id:02d}.mp4"
+
+
+def scene_video_hash_path(job_id: str, scene_id: int) -> Path:
+    """Sibling hash for the per-scene video clip.
+
+    Uses the `.video.hash` suffix (not plain `.hash`) so a job that ever
+    ran in hybrid / mixed modes can keep image and video hashes side-by-side
+    without collisions.
+    """
+    return job_dir(job_id) / f"scene_{scene_id:02d}.video.hash"
+
+
 def final_video_path(job_id: str) -> Path:
     return rendered_dir(job_id) / "final.mp4"
 

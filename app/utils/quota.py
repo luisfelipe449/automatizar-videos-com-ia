@@ -8,6 +8,7 @@ from __future__ import annotations
 
 _IMAGEN = "imagen"
 _POLLINATIONS = "pollinations"
+_VIDEO = "video"
 
 # Keyed by job_id → set of provider names that are known to be unavailable.
 _unavailable: dict[str, set[str]] = {}
@@ -35,6 +36,14 @@ def mark_pollinations_unavailable(job_id: str) -> None:
 
 def is_pollinations_unavailable(job_id: str) -> bool:
     return _has(job_id, _POLLINATIONS)
+
+
+def mark_video_unavailable(job_id: str) -> None:
+    _mark(job_id, _VIDEO)
+
+
+def is_video_unavailable(job_id: str) -> bool:
+    return _has(job_id, _VIDEO)
 
 
 def reset(job_id: str) -> None:

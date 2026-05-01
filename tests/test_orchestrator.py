@@ -58,7 +58,7 @@ def mocked_services(monkeypatch, redirected_dirs: Path):
     subsequent stages (and cache checks) see consistent on-disk state.
     """
     calls: dict[str, int] = {k: 0 for k in (
-        "script", "tts", "captions", "visuals", "render", "upload",
+        "script", "tts", "captions", "clips", "render", "upload",
     )}
 
     script_holder: dict[str, Script] = {}
@@ -103,7 +103,7 @@ def mocked_services(monkeypatch, redirected_dirs: Path):
         return ass
 
     def fake_generate_all_scene_images(script: Script) -> list[Path]:
-        calls["visuals"] += 1
+        calls["clips"] += 1
         filepaths.ensure_job_dirs(script.job_id)
         paths: list[Path] = []
         for scene in script.scenes:
@@ -151,13 +151,13 @@ def test_happy_path_full_pipeline(mocked_services, redirected_dirs):
     assert status["ok"] is True
     assert status["job_id"] == "job-happy"
     assert status["prompt"] == "prompt de teste"
-    for stage in ("script", "tts", "captions", "visuals", "render"):
+    for stage in ("script", "tts", "captions", "clips", "render"):
         assert status["stages"][stage]["status"] == "done", stage
     assert status["stages"]["upload"]["status"] == "done"
     assert status["stages"]["upload"]["video_id"] == "vid-123"
 
     assert mocked_services == {
-        "script": 1, "tts": 1, "captions": 1, "visuals": 1, "render": 1, "upload": 1,
+        "script": 1, "tts": 1, "captions": 1, "clips": 1, "render": 1, "upload": 1,
     }
 
     # status.json on disk matches the returned dict.
@@ -173,7 +173,7 @@ def test_skip_upload(mocked_services, redirected_dirs):
     assert status["stages"]["upload"]["status"] == "skipped"
     assert mocked_services["upload"] == 0
     # The other stages still ran.
-    for stage in ("script", "tts", "captions", "visuals", "render"):
+    for stage in ("script", "tts", "captions", "clips", "render"):
         assert status["stages"][stage]["status"] == "done"
 
 
@@ -193,7 +193,7 @@ def test_resume_from_script(mocked_services, redirected_dirs):
     # Remaining stages still ran.
     assert mocked_services["tts"] == 1
     assert mocked_services["captions"] == 1
-    assert mocked_services["visuals"] == 1
+    assert mocked_services["clips"] == 1
     assert mocked_services["render"] == 1
 
 
@@ -212,17 +212,17 @@ def test_failure_mid_pipeline(monkeypatch, mocked_services, redirected_dirs):
     assert status["stages"]["script"]["status"] == "done"
     assert status["stages"]["tts"]["status"] == "failed"
     assert status["stages"]["tts"]["error"] == "boom"
-    for later in ("captions", "visuals", "render", "upload"):
+    for later in ("captions", "clips", "render", "upload"):
         assert status["stages"][later]["status"] == "pending"
 
     # Downstream services were not called.
     assert mocked_services["captions"] == 0
-    assert mocked_services["visuals"] == 0
+    assert mocked_services["clips"] == 0
     assert mocked_services["render"] == 0
     assert mocked_services["upload"] == 0
 
 
-def test_failure_in_visuals_skips_render_and_upload(
+def test_failure_in_clips_skips_render_and_upload(
     monkeypatch, mocked_services, redirected_dirs
 ):
     def boom(*_a, **_kw):
@@ -231,12 +231,12 @@ def test_failure_in_visuals_skips_render_and_upload(
     monkeypatch.setattr(orchestrator, "generate_all_scene_images", boom)
 
     with pytest.raises(VisualGenerationError):
-        orchestrator.run_pipeline("visuals fail", job_id="job-vfail")
+        orchestrator.run_pipeline("clips fail", job_id="job-vfail")
 
     assert mocked_services["render"] == 0
     assert mocked_services["upload"] == 0
     status = json.loads(filepaths.status_path("job-vfail").read_text(encoding="utf-8"))
-    assert status["stages"]["visuals"]["status"] == "failed"
+    assert status["stages"]["clips"]["status"] == "failed"
     assert status["stages"]["render"]["status"] == "pending"
     assert status["stages"]["upload"]["status"] == "pending"
     assert status["ok"] is False

@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 
 from app.utils import cache, quota
-from app.utils.filepaths import make_job_id, scene_image_path
+from app.utils.filepaths import (
+    make_job_id,
+    scene_image_path,
+    scene_video_hash_path,
+    scene_video_path,
+)
 from app.utils.retries import default_retry, is_retryable_http
 
 
@@ -30,6 +35,24 @@ def test_make_job_id_format_and_idempotency():
 def test_scene_image_path_zero_padded():
     path = scene_image_path("job1", 1)
     assert path.name == "scene_01.png"
+
+
+def test_scene_video_path_zero_padded():
+    path = scene_video_path("job1", 3)
+    assert path.name == "scene_03.mp4"
+
+
+def test_scene_video_hash_path_uses_video_suffix():
+    """`.video.hash` lets image- and video-hashes coexist in the same job dir."""
+    path = scene_video_hash_path("job1", 5)
+    assert path.name == "scene_05.video.hash"
+
+
+def test_scene_video_path_is_sibling_of_image_path():
+    """Image and video artifacts for the same scene share a parent directory."""
+    img = scene_image_path("job1", 2)
+    vid = scene_video_path("job1", 2)
+    assert img.parent == vid.parent
 
 
 # --------------------------------------------------------------------------- #
@@ -138,6 +161,22 @@ def test_quota_imagen_is_per_job():
     assert quota.is_imagen_unavailable("job2") is False
     quota.reset("job1")
     assert quota.is_imagen_unavailable("job1") is False
+
+
+def test_quota_video_is_per_job_and_independent_of_imagen():
+    """Video/Imagen/Pollinations flags must not leak between providers."""
+    quota.reset("vid-job1")
+    quota.reset("vid-job2")
+
+    quota.mark_video_unavailable("vid-job1")
+    assert quota.is_video_unavailable("vid-job1") is True
+    assert quota.is_video_unavailable("vid-job2") is False
+    # Marking video must NOT trip the image providers.
+    assert quota.is_imagen_unavailable("vid-job1") is False
+    assert quota.is_pollinations_unavailable("vid-job1") is False
+
+    quota.reset("vid-job1")
+    assert quota.is_video_unavailable("vid-job1") is False
 
 
 # --------------------------------------------------------------------------- #

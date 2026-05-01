@@ -50,6 +50,15 @@ LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "groq").strip().lower()
 IMAGE_PROVIDER: str = os.getenv("IMAGE_PROVIDER", "pollinations").strip().lower()
 
 # -----------------------------------------------------------------------------
+# Optional per-scene video mode.
+# -----------------------------------------------------------------------------
+# When USE_VIDEO is truthy, the visuals stage generates 5s MP4 clips via
+# fal.ai LTX Video instead of still PNGs. Default off so the MVP pipeline
+# (no fal.ai credentials, no paid API) keeps working out of the box.
+# FAL_KEY is read by fal_client directly from the environment.
+USE_VIDEO: bool = os.getenv("USE_VIDEO", "false").strip().lower() in ("true", "1", "yes")
+
+# -----------------------------------------------------------------------------
 # Model names (overridable via env).
 # -----------------------------------------------------------------------------
 GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")

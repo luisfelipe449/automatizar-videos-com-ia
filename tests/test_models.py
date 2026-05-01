@@ -78,7 +78,7 @@ def test_description_with_lowercase_shorts_passes_unchanged():
     assert script.description == desc
 
 
-def test_render_spec_mismatched_image_paths_rejected():
+def test_render_spec_mismatched_scene_paths_rejected():
     scenes = [
         Scene(id=1, scene_text="a", image_prompt="p", duration_seconds=4),
         Scene(id=2, scene_text="b", image_prompt="p", duration_seconds=4),
@@ -87,11 +87,30 @@ def test_render_spec_mismatched_image_paths_rejected():
         RenderSpec(
             job_id="job1",
             scenes=scenes,
-            image_paths=[Path("scene_01.png")],  # only 1, need 2
+            scene_paths=[Path("scene_01.png")],  # only 1, need 2
             narration_path=Path("narration.wav"),
             captions_path=Path("captions.ass"),
             output_path=Path("final.mp4"),
         )
+
+
+def test_render_spec_accepts_mixed_image_and_video_paths():
+    """A RenderSpec can carry a mix of .png (image) and .mp4 (video) per scene."""
+    scenes = [
+        Scene(id=1, scene_text="a", image_prompt="p", duration_seconds=4),
+        Scene(id=2, scene_text="b", image_prompt="p", duration_seconds=4),
+    ]
+    spec = RenderSpec(
+        job_id="job-mix",
+        scenes=scenes,
+        scene_paths=[Path("scene_01.mp4"), Path("scene_02.png")],
+        narration_path=Path("narration.wav"),
+        captions_path=Path("captions.ass"),
+        output_path=Path("final.mp4"),
+    )
+    # Field is preserved in the same order; suffix-dispatch happens downstream.
+    assert spec.scene_paths[0].suffix == ".mp4"
+    assert spec.scene_paths[1].suffix == ".png"
 
 
 def test_title_over_100_chars_rejected():

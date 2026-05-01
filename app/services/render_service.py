@@ -5,6 +5,13 @@ Ken Burns zoom on every scene, `xfade` crossfade transitions between consecutive
 scenes, ASS karaoke captions burnt in via `libass`. Optionally mixes a random
 CC0 background track under the narration at a fixed -20 dB.
 
+Per-scene input can be either:
+  - `.png` — image scene, rendered with zoompan (Ken Burns);
+  - `.mp4` — video scene (e.g. fal.ai LTX, ~5s 768×512), rendered with
+    scale+crop to 1080×1920 and `tpad` freeze-frame padding when the scene
+    needs to last longer than the clip itself.
+Dispatch is per-scene, based on the file suffix of `spec.scene_paths[idx]`.
+
 The filter-graph builder (`_build_ffmpeg_command`) is pure and side-effect-free
 so it can be snapshot-tested without touching ffmpeg.
 """
@@ -58,6 +65,11 @@ _XFADE_DURATION = 0.4
 # FFmpeg `xfade` transition kind. "fade" is a plain luma crossfade; other
 # options (fadeblack, dissolve, wipeleft, ...) are tunable later.
 _XFADE_TRANSITION = "fade"
+
+# Per-scene MP4 clips from fal.ai LTX are a fixed 5.04s. Anything longer
+# than this is produced by freeze-frame padding (`tpad`). Keep as a named
+# constant so callers don't have to guess the magic number.
+_VIDEO_CLIP_DURATION_S = 5.0
 
 
 class RenderError(RuntimeError):
@@ -194,22 +206,46 @@ def _build_filter_graph(
     for idx, scene in enumerate(spec.scenes):
         dur = float(durations[idx]) if durations is not None else float(scene.duration_seconds)
         per_scene_durations.append(dur)
-        # zoompan `d=` is in output frames; round up so no scene is clipped short.
-        frames = max(1, int(round(dur * _FPS)))
-        # Scale (preserving aspect, cropping overflow) so zoompan sees a
-        # correctly sized frame regardless of the source image's aspect.
-        # The optional rank-overlay runs AFTER zoompan so the text isn't
-        # scaled/cropped along with the image, and BEFORE the xfade merge
-        # so it fades out with its own scene.
+        # Rank overlay runs AFTER scale/crop (image scene: after zoompan) so
+        # the text isn't scaled/cropped along with the frame, and BEFORE the
+        # xfade merge so it fades out with its own scene.
         rank_overlay = _build_rank_overlay(scene)
-        chain = (
-            f"[{idx}:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
-            f"crop={w}:{h},"
-            f"zoompan=z='{_ZOOM_EXPR}':x='{_ZOOM_X_EXPR}':y='{_ZOOM_Y_EXPR}':"
-            f"d={frames}:s={w}x{h}:fps={_FPS}"
-            f"{rank_overlay}"
-            f"[v{idx}]"
-        )
+        scene_path = spec.scene_paths[idx]
+        if scene_path.suffix.lower() == ".mp4":
+            # Video scene: normalize to target canvas, freeze-pad if the clip
+            # (fixed ~5s for fal.ai LTX) is shorter than the target scene
+            # duration. tpad `stop_duration` is in SECONDS, so no frame math
+            # is needed here — ffmpeg clones the final frame for that long.
+            pad_seconds = max(0.0, dur - _VIDEO_CLIP_DURATION_S)
+            # Only emit `tpad=...` when we actually need padding; a zero-
+            # duration tpad is a no-op but pollutes the graph.
+            tpad_frag = (
+                f",tpad=stop_mode=clone:stop_duration={pad_seconds:.6f}"
+                if pad_seconds > 0.0
+                else ""
+            )
+            chain = (
+                f"[{idx}:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+                f"crop={w}:{h},setpts=PTS-STARTPTS"
+                f"{tpad_frag}"
+                f",fps={_FPS}"
+                f"{rank_overlay}"
+                f"[v{idx}]"
+            )
+        else:
+            # Image scene: Ken Burns via zoompan.
+            # zoompan `d=` is in output frames; round up so no scene is clipped short.
+            frames = max(1, int(round(dur * _FPS)))
+            # Scale (preserving aspect, cropping overflow) so zoompan sees a
+            # correctly sized frame regardless of the source image's aspect.
+            chain = (
+                f"[{idx}:v]scale={w}:{h}:force_original_aspect_ratio=increase,"
+                f"crop={w}:{h},"
+                f"zoompan=z='{_ZOOM_EXPR}':x='{_ZOOM_X_EXPR}':y='{_ZOOM_Y_EXPR}':"
+                f"d={frames}:s={w}x{h}:fps={_FPS}"
+                f"{rank_overlay}"
+                f"[v{idx}]"
+            )
         chains.append(chain)
 
     # Validate every scene can host an xfade. Only enforced when there are 2+
@@ -344,7 +380,7 @@ def _build_ffmpeg_command(
     -20 dB. `-map` then points at the mixed `[a]` output instead of the raw
     narration stream.
 
-    Layout (no music):
+    Layout (no music, image scenes):
         ffmpeg  -framerate 1 -loop 1 -t 1 -i img_1  ...  -i img_N
                 -i narration.wav
                 -filter_complex "<graph>"
@@ -355,28 +391,39 @@ def _build_ffmpeg_command(
                 -shortest
                 <output>
 
+    Video scenes (path ends in `.mp4`) use plain `-i <path>` instead of the
+    still-image `-framerate 1 -loop 1 -t 1` flags; filter-graph normalisation
+    and freeze-padding take care of timing.
+
     Layout (with music): identical except a trailing `-i <music>.mp3` is
     appended after narration and `-map <N>:a` becomes `-map "[a]"`.
     """
     if not spec.scenes:
         raise ValueError("RenderSpec.scenes must be non-empty")
-    if len(spec.image_paths) != len(spec.scenes):
+    if len(spec.scene_paths) != len(spec.scenes):
         # RenderSpec already validates this, but keep the builder defensive.
-        raise ValueError("image_paths length must match scenes length")
+        raise ValueError("scene_paths length must match scenes length")
 
     cmd: list[str] = [ffmpeg_bin_path, "-y"]
 
-    # One still image per scene. We feed ONE input frame at 1 fps: zoompan
-    # then generates `d` output frames from that single input frame. Using
-    # `-loop 1 -t D` here instead would spam zoompan with D*fps duplicate
-    # input frames and visually freeze the scene on the first frame.
-    for image_path in spec.image_paths:
-        cmd += [
-            "-framerate", "1",
-            "-loop", "1",
-            "-t", "1",
-            "-i", str(image_path),
-        ]
+    # Per-scene input flags depend on whether the source is a still image or
+    # an already-encoded video clip.
+    #  - Image: one input frame at 1 fps. zoompan expands that single frame
+    #    into `d` output frames. Using `-loop 1 -t D` here would spam zoompan
+    #    with D*fps duplicate input frames and visually freeze the scene on
+    #    the first frame.
+    #  - Video: plain `-i path.mp4` — don't set -framerate/-loop/-t; ffmpeg
+    #    reads the clip's own timing and the filter chain (tpad) pads it out.
+    for scene_path in spec.scene_paths:
+        if scene_path.suffix.lower() == ".mp4":
+            cmd += ["-i", str(scene_path)]
+        else:
+            cmd += [
+                "-framerate", "1",
+                "-loop", "1",
+                "-t", "1",
+                "-i", str(scene_path),
+            ]
 
     # Narration audio — its input index is len(scenes).
     audio_input_index = len(spec.scenes)
@@ -417,9 +464,10 @@ def render_short(spec: RenderSpec) -> Path:
     """
     # Pre-flight: make sure every input exists so ffmpeg's error isn't the
     # first place we learn about a missing file.
-    for image_path in spec.image_paths:
-        if not Path(image_path).exists():
-            raise RenderError(f"scene image not found: {image_path}")
+    for scene_path in spec.scene_paths:
+        if not Path(scene_path).exists():
+            label = "scene video" if scene_path.suffix.lower() == ".mp4" else "scene image"
+            raise RenderError(f"{label} not found: {scene_path}")
     if not Path(spec.narration_path).exists():
         raise RenderError(f"narration not found: {spec.narration_path}")
     if not Path(spec.captions_path).exists():

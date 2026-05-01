@@ -101,11 +101,19 @@ class Job(BaseModel):
 
 
 class RenderSpec(BaseModel):
-    """Declarative input to `render_service`: every path FFmpeg needs."""
+    """Declarative input to `render_service`: every path FFmpeg needs.
+
+    `scene_paths` can be a mix of `.png` (image scenes, rendered with
+    zoompan Ken Burns) and `.mp4` (video scenes from fal.ai LTX Video,
+    rendered with scale+crop+freeze-pad). render_service dispatches based
+    on the file extension per scene.
+    """
 
     job_id: str
     scenes: list[Scene]
-    image_paths: list[Path]
+    # One per scene, in scene order. `.png` -> image path, `.mp4` -> video
+    # clip. Renamed from `image_paths` when video-per-scene mode landed.
+    scene_paths: list[Path]
     narration_path: Path
     captions_path: Path
     output_path: Path
@@ -113,10 +121,10 @@ class RenderSpec(BaseModel):
     height: int = TARGET_HEIGHT
 
     @model_validator(mode="after")
-    def _validate_image_count(self) -> "RenderSpec":
-        if len(self.image_paths) != len(self.scenes):
+    def _validate_scene_count(self) -> "RenderSpec":
+        if len(self.scene_paths) != len(self.scenes):
             raise ValueError(
-                f"image_paths length ({len(self.image_paths)}) must match "
+                f"scene_paths length ({len(self.scene_paths)}) must match "
                 f"scenes length ({len(self.scenes)})."
             )
         return self

@@ -1,9 +1,14 @@
 """End-to-end pipeline orchestrator (Phase 9 of the pipeline).
 
 Single responsibility: run all 6 pipeline stages (script → tts → captions →
-visuals → render → upload) for a given user prompt. Idempotent — each stage
+clips → render → upload) for a given user prompt. Idempotent — each stage
 short-circuits when its artifact is already present and fresh. Writes a
 `status.json` after every stage, so a crashed run can be inspected and resumed.
+
+The `clips` stage generates either per-scene PNGs (default, MVP) or per-scene
+MP4s (when `USE_VIDEO=true`, via fal.ai LTX Video). On any per-scene fal.ai
+failure, video_service transparently falls back to a PNG — render_service
+branches on the `.mp4`/`.png` suffix to pick the right filter chain per scene.
 
 No business logic lives here — the stages delegate to `app/services/`. This
 module is just flow control + cache checks + status.
@@ -30,7 +35,10 @@ from app.services.youtube_service import upload_short
 from app.utils import cache, filepaths
 
 _LOG_PREFIX = "[orchestrator]"
-_STAGE_NAMES = ("script", "tts", "captions", "visuals", "render", "upload")
+# Stage name history: `visuals` was renamed to `clips` when video-per-scene
+# mode landed. Existing status.json files from older runs become stale —
+# they're disposable cache and will be regenerated on the next run.
+_STAGE_NAMES = ("script", "tts", "captions", "clips", "render", "upload")
 T = TypeVar("T")
 
 
@@ -145,17 +153,28 @@ def _stage_captions(script: Script) -> Path:
     )
 
 
-def _stage_visuals(script: Script) -> list[Path]:
+def _stage_clips(script: Script) -> list[Path]:
+    """Generate all scene clips.
+
+    When `config.USE_VIDEO` is true, delegates to `video_service` which
+    produces one MP4 per scene via fal.ai LTX Video (with PNG fallback on
+    per-scene failure). Otherwise the MVP image-per-scene path is used.
+    """
+    from app import config
+
+    if config.USE_VIDEO:
+        from app.services.video_service import generate_all_scene_clips
+        return generate_all_scene_clips(script)
     return generate_all_scene_images(script)
 
 
 def _stage_render(
-    script: Script, image_paths: list[Path], narration: Path, captions: Path
+    script: Script, scene_paths: list[Path], narration: Path, captions: Path
 ) -> Path:
     return render_short(RenderSpec(
         job_id=script.job_id,
         scenes=script.scenes,
-        image_paths=image_paths,
+        scene_paths=scene_paths,
         narration_path=narration,
         captions_path=captions,
         output_path=filepaths.final_video_path(script.job_id),
@@ -185,20 +204,36 @@ def _captions_fresh(script: Script) -> Path | None:
     return cp if cache.artifact_fresh(cp, hp, expected) else None
 
 
-def _visuals_fresh(script: Script) -> list[Path] | None:
-    """Return paths iff EVERY scene image is already cache-fresh."""
+def _clips_fresh(script: Script) -> list[Path] | None:
+    """Return paths iff EVERY scene artifact is cache-fresh.
+
+    Accepts either `.mp4` (video-per-scene mode) or `.png` (image mode or
+    fallback from a prior video-mode run) — whichever the current job's
+    cache has on disk. Configured provider is NOT re-checked; if a mixed
+    set of artifacts already satisfies every scene we use them as-is.
+    """
     paths: list[Path] = []
     for scene in script.scenes:
-        art = filepaths.scene_image_path(script.job_id, scene.id)
-        hsh = filepaths.scene_image_hash_path(script.job_id, scene.id)
-        if not cache.artifact_fresh(art, hsh, cache.hash_text(scene.image_prompt)):
+        expected = cache.hash_text(scene.image_prompt)
+        video_art = filepaths.scene_video_path(script.job_id, scene.id)
+        video_hash = filepaths.scene_video_hash_path(script.job_id, scene.id)
+        image_art = filepaths.scene_image_path(script.job_id, scene.id)
+        image_hash = filepaths.scene_image_hash_path(script.job_id, scene.id)
+
+        # Prefer the video artifact when both exist — it's higher fidelity
+        # for USE_VIDEO runs. Falls through to the image path on PNG-only
+        # jobs or when a prior fal.ai attempt fell back to an image.
+        if cache.artifact_fresh(video_art, video_hash, expected):
+            paths.append(video_art)
+        elif cache.artifact_fresh(image_art, image_hash, expected):
+            paths.append(image_art)
+        else:
             return None
-        paths.append(art)
     return paths
 
 
 def _render_fresh(
-    script: Script, image_paths: list[Path], narration: Path, captions: Path
+    script: Script, scene_paths: list[Path], narration: Path, captions: Path
 ) -> Path | None:
     """final.mp4 is fresh iff it exists AND its mtime >= every input's mtime."""
     final = filepaths.final_video_path(script.job_id)
@@ -206,7 +241,7 @@ def _render_fresh(
         return None
     try:
         final_mtime = final.stat().st_mtime
-        for inp in (narration, captions, *image_paths):
+        for inp in (narration, captions, *scene_paths):
             if inp.stat().st_mtime > final_mtime:
                 return None
     except OSError:
@@ -264,17 +299,17 @@ def run_pipeline(
         )
         flush(False)
 
-        image_paths, stages["visuals"] = _run_stage(
-            "visuals", lambda: _stage_visuals(script),
-            check_cache=lambda: _visuals_fresh(script),
+        scene_paths, stages["clips"] = _run_stage(
+            "clips", lambda: _stage_clips(script),
+            check_cache=lambda: _clips_fresh(script),
         )
         flush(False)
 
         video_path, stages["render"] = _run_stage(
             "render",
-            lambda: _stage_render(script, image_paths, narration_path, captions_path),
+            lambda: _stage_render(script, scene_paths, narration_path, captions_path),
             check_cache=lambda: _render_fresh(
-                script, image_paths, narration_path, captions_path
+                script, scene_paths, narration_path, captions_path
             ),
         )
         flush(False)
