@@ -20,6 +20,7 @@ def list_jobs(
     request: Request,
     status: str | None = None,
     job_queue: JobQueueManager = Depends(get_job_queue_manager),
+    db: Session = Depends(get_db),
 ):
     """Render jobs list page with optional status filter.
 
@@ -27,11 +28,15 @@ def list_jobs(
         request: FastAPI request
         status: Optional status filter (pending/running/completed/failed)
         job_queue: Job queue manager dependency
+        db: Database session
 
     Returns:
         Jobs list HTML page
     """
+    from app.db.models import Account
+
     jobs = job_queue.get_job_history(limit=100, status=status)
+    accounts = db.query(Account).filter_by(is_active=True).order_by(Account.name).all()
 
     return templates.TemplateResponse(
         request=request,
@@ -39,6 +44,7 @@ def list_jobs(
         context={
             "jobs": jobs,
             "status_filter": status,
+            "accounts": accounts,
         }
     )
 
@@ -47,6 +53,7 @@ def list_jobs(
 def create_job(
     prompt: str = Form(...),
     priority: int = Form(0),
+    account_id: int | None = Form(None),
     job_queue: JobQueueManager = Depends(get_job_queue_manager),
 ):
     """Create new job.
@@ -54,12 +61,13 @@ def create_job(
     Args:
         prompt: Job prompt text
         priority: Job priority (higher = first)
+        account_id: Optional account ID to use (None = auto-select)
         job_queue: Job queue manager dependency
 
     Returns:
         Redirect to jobs list
     """
-    job_queue.enqueue(prompt=prompt, priority=priority)
+    job_queue.enqueue(prompt=prompt, priority=priority, account_id=account_id)
     return RedirectResponse(url="/jobs", status_code=303)
 
 
