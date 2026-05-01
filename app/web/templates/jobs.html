@@ -63,7 +63,7 @@
                     {% if job.account %}
                         <span class="text-blue-600">{{ job.account.name }}</span>
                     {% else %}
-                        <span class="text-gray-400 italic">Auto-select</span>
+                        <span class="text-red-600 italic">Not assigned</span>
                     {% endif %}
                 </td>
                 <td class="py-4 px-6 text-sm">
@@ -126,21 +126,22 @@
 
             <div>
                 <label for="account_id" class="block text-sm font-medium text-gray-700 mb-1">
-                    YouTube Account
+                    YouTube Account <span class="text-red-500">*</span>
                 </label>
                 <select
                     id="account_id"
                     name="account_id"
+                    required
                     class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
                 >
-                    <option value="">Auto-select (best available)</option>
+                    <option value="">-- Select an account --</option>
                     {% for account in accounts %}
                     <option value="{{ account.id }}">
                         {{ account.name }} - {{ account.email }} (Quota: {{ account.daily_quota - account.quota_used }}/{{ account.daily_quota }} available)
                     </option>
                     {% endfor %}
                 </select>
-                <p class="mt-1 text-sm text-gray-500">Select specific account or let the system choose automatically</p>
+                <p class="mt-1 text-sm text-gray-500">Choose which YouTube account to use for this job</p>
             </div>
 
             <div>

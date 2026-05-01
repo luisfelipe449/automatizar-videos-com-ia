@@ -53,20 +53,38 @@ def list_jobs(
 def create_job(
     prompt: str = Form(...),
     priority: int = Form(0),
-    account_id: int | None = Form(None),
+    account_id: int = Form(...),
     job_queue: JobQueueManager = Depends(get_job_queue_manager),
+    db: Session = Depends(get_db),
 ):
     """Create new job.
 
     Args:
         prompt: Job prompt text
         priority: Job priority (higher = first)
-        account_id: Optional account ID to use (None = auto-select)
+        account_id: Required account ID to use
         job_queue: Job queue manager dependency
+        db: Database session
 
     Returns:
         Redirect to jobs list
     """
+    from app.db.models import Account
+
+    # Validate account exists and is active
+    account = db.query(Account).filter_by(id=account_id, is_active=True).first()
+    if not account:
+        raise HTTPException(status_code=400, detail="Invalid or inactive account selected")
+
+    # Check if account has enough quota
+    quota_needed = 1600  # Approximate quota for one video upload
+    quota_available = account.daily_quota - account.quota_used
+    if quota_available < quota_needed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Account '{account.name}' doesn't have enough quota. Available: {quota_available}, needed: {quota_needed}"
+        )
+
     job_queue.enqueue(prompt=prompt, priority=priority, account_id=account_id)
     return RedirectResponse(url="/jobs", status_code=303)
 

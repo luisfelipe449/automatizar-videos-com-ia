@@ -30,35 +30,62 @@ class PipelineRunner:
     def run_job(self, job_id: str) -> None:
         """Execute pipeline for given job.
 
-        Assigns available account, runs pipeline, updates job status,
-        and consumes quota on success. Handles quota exceeded by
-        resetting job to pending with different account.
+        Uses the account already assigned to the job. If job fails due to
+        quota issues, marks it as failed with clear error message.
 
         Args:
             job_id: Job ID to execute
 
         Raises:
-            PipelineRunnerError: If job not found
+            PipelineRunnerError: If job not found or no account assigned
         """
-        from app.db.models import Job
+        from app.db.models import Job, Account
 
         # Get job
         job = self.session.query(Job).filter_by(job_id=job_id).first()
         if not job:
             raise PipelineRunnerError(f"Job {job_id} not found")
 
-        # Get available account
-        account = self.account_mgr.get_available_account()
+        # Validate account is assigned
+        if not job.account_id:
+            self.job_queue.update_status(
+                job_id=job_id,
+                status="failed",
+                error="No account assigned to job. Please select an account when creating the job."
+            )
+            return
+
+        # Get assigned account
+        account = self.session.query(Account).filter_by(id=job.account_id).first()
         if not account:
             self.job_queue.update_status(
                 job_id=job_id,
                 status="failed",
-                error="No available account with sufficient quota"
+                error=f"Account ID {job.account_id} not found"
             )
             return
 
-        # Assign account and mark as running
-        job.account_id = account.id
+        # Check if account is active
+        if not account.is_active:
+            self.job_queue.update_status(
+                job_id=job_id,
+                status="failed",
+                error=f"Account '{account.name}' is inactive. Please activate it or select a different account."
+            )
+            return
+
+        # Check quota before starting
+        quota_needed = 1600
+        quota_available = account.daily_quota - account.quota_used
+        if quota_available < quota_needed:
+            self.job_queue.update_status(
+                job_id=job_id,
+                status="failed",
+                error=f"Account '{account.name}' doesn't have enough quota. Available: {quota_available}, needed: {quota_needed}"
+            )
+            return
+
+        # Mark as running
         self.job_queue.update_status(job_id=job_id, status="running")
 
         # Prepare account credentials for orchestrator
@@ -132,15 +159,13 @@ class PipelineRunner:
                     error=result["error"]
                 )
 
-        except YouTubeQuotaExceeded:
-            # Quota exceeded during upload - reset job to pending
-            # and unassign account so it can be retried with different account
-            job.status = "pending"
-            job.account_id = None
-            job.stage = None
-            job.error_message = None
-            job.started_at = None
-            self.session.commit()
+        except YouTubeQuotaExceeded as exc:
+            # Quota exceeded during upload - mark as failed with clear error
+            self.job_queue.update_status(
+                job_id=job_id,
+                status="failed",
+                error=f"YouTube quota exceeded for account '{account.name}'. Please try again later or use a different account."
+            )
 
         except Exception as exc:
             # Other errors - mark job as failed
