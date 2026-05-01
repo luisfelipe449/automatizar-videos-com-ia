@@ -51,6 +51,8 @@ O script abre o navegador, pede consentimento com o escopo `youtube.upload` e im
 
 ## Gerar e publicar um Short
 
+### Modo CLI (original)
+
 ```bash
 python -m app.orchestrator --prompt "3 curiosidades sobre buracos negros"
 ```
@@ -61,6 +63,111 @@ Flags úteis:
 - `--job-id <id>` — sobrescreve o `job_id` derivado do prompt.
 
 O upload usa `YOUTUBE_PRIVACY_STATUS` do `.env` (default `private`). Só troque para `public` depois de validar 2 a 3 uploads privados manualmente no YouTube Studio.
+
+### Modo Dashboard (multi-account)
+
+Para gerenciar múltiplas contas do YouTube e processar jobs em fila, use o dashboard web:
+
+#### 1. Inicializar o banco de dados
+
+```bash
+python scripts/init_db.py
+```
+
+Isso cria o banco SQLite em `data/app.db` com as tabelas necessárias.
+
+#### 2. Iniciar o dashboard
+
+```bash
+uvicorn app.web.main:app --reload --port 8000
+```
+
+Acesse http://localhost:8000 para ver o dashboard.
+
+#### 3. Iniciar o worker (terminal separado)
+
+```bash
+python -m app.worker
+```
+
+O worker processa jobs da fila continuamente. Pressione Ctrl+C para parar.
+
+#### 4. Adicionar conta do YouTube
+
+1. Acesse http://localhost:8000/accounts
+2. Clique em "Add Account"
+3. Preencha os dados OAuth2:
+   - **Name**: Nome identificador (ex: "Canal Principal")
+   - **Email**: Email da conta Google
+   - **Client ID**: OAuth2 client_id do Google Cloud Console
+   - **Client Secret**: OAuth2 client_secret
+   - **Refresh Token**: Obtido via `scripts/bootstrap_youtube_oauth.py`
+4. A conta será validada e adicionada ao pool
+
+#### 5. Submeter job
+
+1. Acesse http://localhost:8000/jobs
+2. Digite o prompt (ex: "5 fatos sobre astronomia")
+3. Clique em "Create Job"
+4. O worker processará automaticamente usando a conta com mais quota disponível
+5. Acompanhe o progresso na página de detalhes do job
+
+## Multi-Account Setup
+
+O sistema de multi-contas permite gerenciar múltiplas contas do YouTube para distribuir a carga de uploads e contornar os limites de quota da API.
+
+### Como obter credenciais OAuth2
+
+1. Acesse o [Google Cloud Console](https://console.cloud.google.com/)
+2. Crie um projeto (ou use existente)
+3. Habilite a **YouTube Data API v3**:
+   - Menu lateral: APIs & Services > Library
+   - Busque "YouTube Data API v3"
+   - Clique em "Enable"
+4. Configure a tela de consentimento OAuth:
+   - Menu lateral: APIs & Services > OAuth consent screen
+   - Tipo: External (ou Internal para Google Workspace)
+   - Preencha nome do app, email de suporte
+   - Adicione escopo: `https://www.googleapis.com/auth/youtube.upload`
+   - Adicione seu email como usuário de teste (se External)
+5. Crie credenciais OAuth2:
+   - Menu lateral: APIs & Services > Credentials
+   - Create Credentials > OAuth client ID
+   - Application type: Desktop app
+   - Baixe o JSON (ou copie client_id e client_secret)
+6. Obtenha o refresh token:
+   ```bash
+   python scripts/bootstrap_youtube_oauth.py --client-secrets path/to/client_secret.json
+   ```
+   Siga o fluxo OAuth no navegador e copie o `YOUTUBE_REFRESH_TOKEN` impresso.
+
+### Limites de Quota
+
+- Cada conta do YouTube tem **10.000 unidades/dia** de quota
+- Um upload (`videos.insert`) consome **1.600 unidades**
+- Portanto, cada conta pode fazer ~**6 uploads/dia**
+- Com 3 contas, você pode fazer até **18 uploads/dia**
+
+### Rotação de Contas
+
+O sistema seleciona automaticamente a conta com **mais quota disponível**:
+
+1. Worker verifica `quota_used` de cada conta ativa
+2. Filtra contas com quota suficiente (≥ 1600 unidades restantes)
+3. Seleciona a conta com maior quota disponível
+4. Após upload bem-sucedido, incrementa `quota_used` da conta
+5. Quando `quota_reset_at` é atingido (24h depois), zera `quota_used`
+
+Se todas as contas estiverem sem quota, o job falha com `"No available account with sufficient quota"` e deve ser retentado após o reset.
+
+### Adicionar múltiplas contas
+
+Para cada canal do YouTube que você gerencia:
+
+1. Obtenha credenciais OAuth2 separadas (ou use as mesmas, se o refresh token autorizar múltiplos canais)
+2. No dashboard, clique em "Add Account" e preencha os dados
+3. A conta será validada e adicionada ao pool
+4. O worker distribuirá jobs entre as contas automaticamente
 
 ## Artefatos gerados
 
@@ -100,11 +207,119 @@ As legendas são queimadas em formato **ASS** (`captions.ass`) com realce por pa
 
 ## Solução de problemas
 
+### Problemas gerais (CLI e Dashboard)
+
 - `MissingEnvVar: Environment variable 'X' is required` — preencha `.env` seguindo `.env.example`.
 - `FFmpegError ...` ou `ffmpeg not found` — rode `ffmpeg -version`; se não estiver no PATH, defina `FFMPEG_PATH` no `.env` apontando para o executável.
 - `YouTubeUploadError ... 401 UNAUTHENTICATED` / `invalid_grant` — o refresh token expirou ou foi revogado; rode `scripts/bootstrap_youtube_oauth.py` de novo e cole o novo valor no `.env`.
 - `VisualGenerationError ... Pollinations ...` + `no fallback available` — Pollinations está offline e não há `GEMINI_API_KEY` configurada; tente mais tarde ou configure Gemini para habilitar o fallback Imagen.
 - Upload falha com `quotaExceeded` — você passou do limite diário do YouTube; espere até ~00:00 PT (Pacific Time) para o reset.
+
+### Problemas do Dashboard
+
+#### Worker não processa jobs
+
+**Sintoma**: Jobs ficam em `pending` indefinidamente.
+
+**Soluções**:
+1. Verifique se o worker está rodando:
+   ```bash
+   python -m app.worker
+   ```
+   Deve exibir `[worker] Starting job processor...`
+
+2. Verifique se há contas ativas com quota:
+   - Acesse http://localhost:8000/accounts
+   - Confirme que existe pelo menos 1 conta com `is_active=True`
+   - Verifique `quota_used` < `daily_quota`
+
+3. Verifique logs do worker no terminal:
+   - `No available account with sufficient quota` → todas as contas esgotaram quota
+   - `Job X not found` → banco corrompido, reinicialize com `scripts/init_db.py`
+
+4. Se o worker parou com erro, reinicie-o. Ele é resiliente e retomará de onde parou.
+
+#### Dashboard não inicia
+
+**Sintoma**: `uvicorn app.web.main:app` falha ou retorna 500.
+
+**Soluções**:
+1. Verifique se o banco foi inicializado:
+   ```bash
+   python scripts/init_db.py
+   ```
+
+2. Verifique dependências:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. Verifique se a porta 8000 está livre:
+   ```bash
+   # Windows
+   netstat -ano | findstr :8000
+   # Linux/macOS
+   lsof -i :8000
+   ```
+
+4. Tente porta alternativa:
+   ```bash
+   uvicorn app.web.main:app --port 8080
+   ```
+
+#### Erro ao adicionar conta (OAuth)
+
+**Sintoma**: Formulário retorna erro de validação ou "Credential validation failed".
+
+**Soluções**:
+1. Verifique se o refresh token é válido:
+   - Rode `scripts/bootstrap_youtube_oauth.py` novamente
+   - Use o token recém-gerado
+
+2. Confirme que `client_id` e `client_secret` correspondem ao projeto que gerou o refresh token.
+
+3. Verifique se a YouTube Data API v3 está habilitada no Google Cloud Console.
+
+4. Se o erro for "Account with name 'X' already exists", use nome diferente ou remova a conta antiga.
+
+#### Job falha imediatamente
+
+**Sintoma**: Job muda de `pending` para `failed` em segundos.
+
+**Soluções**:
+1. Verifique `error_message` na página de detalhes do job.
+
+2. Erros comuns:
+   - `No available account with sufficient quota` → adicione mais contas ou espere reset de quota
+   - `GroqError ... API key ...` → configure `GROQ_API_KEY` no `.env`
+   - `GeminiTTSError ...` → configure `GEMINI_API_KEY` no `.env`
+   - `FFmpegError ...` → instale FFmpeg ou configure `FFMPEG_PATH`
+
+3. Teste o pipeline manualmente para diagnóstico:
+   ```bash
+   python -m app.orchestrator --prompt "teste" --skip-upload
+   ```
+
+#### Quota sempre excedida
+
+**Sintoma**: Todas as contas mostram `quota_used >= daily_quota`.
+
+**Soluções**:
+1. Aguarde até `quota_reset_at` (visível na página de contas). O worker reseta automaticamente.
+
+2. Se `quota_reset_at` passou mas quota não resetou:
+   - Reinicie o worker (ele verifica resets a cada iteração)
+   - Ou force manualmente via Python shell:
+     ```python
+     from app.db.database import get_session
+     from app.core.account_manager import AccountManager
+     with get_session() as session:
+         mgr = AccountManager(session)
+         count = mgr.reset_daily_quotas()
+         print(f"Reset {count} accounts")
+     ```
+
+3. Considere adicionar mais contas ou aumentar `daily_quota` no Google Cloud Console (requer solicitação ao Google).
 
 ## Estrutura de diretórios
 
