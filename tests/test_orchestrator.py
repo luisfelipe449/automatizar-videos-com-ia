@@ -145,36 +145,38 @@ def mocked_services(monkeypatch, redirected_dirs: Path):
 # --------------------------------------------------------------------------- #
 
 def test_happy_path_full_pipeline(mocked_services, redirected_dirs):
-    """All 6 stages run exactly once; status.json ok=True; video_id present."""
-    status = orchestrator.run_pipeline("prompt de teste", job_id="job-happy")
+    """All 6 stages run exactly once; success=True; video_id present."""
+    result = orchestrator.run_pipeline("prompt de teste", job_id="job-happy")
 
-    assert status["ok"] is True
-    assert status["job_id"] == "job-happy"
-    assert status["prompt"] == "prompt de teste"
-    for stage in ("script", "tts", "captions", "clips", "render"):
-        assert status["stages"][stage]["status"] == "done", stage
-    assert status["stages"]["upload"]["status"] == "done"
-    assert status["stages"]["upload"]["video_id"] == "vid-123"
+    assert result["success"] is True
+    assert result["video_id"] == "vid-123"
+    assert len(result["stages_completed"]) == 6
+    assert result["error"] is None
 
     assert mocked_services == {
         "script": 1, "tts": 1, "captions": 1, "clips": 1, "render": 1, "upload": 1,
     }
 
-    # status.json on disk matches the returned dict.
+    # status.json on disk should have ok=True (internal format preserved)
     on_disk = json.loads(filepaths.status_path("job-happy").read_text(encoding="utf-8"))
     assert on_disk["ok"] is True
+    assert on_disk["job_id"] == "job-happy"
+    assert on_disk["prompt"] == "prompt de teste"
 
 
 def test_skip_upload(mocked_services, redirected_dirs):
-    """`skip_upload=True` short-circuits the upload stage and leaves ok=True."""
-    status = orchestrator.run_pipeline("prompt skip", job_id="job-skip", skip_upload=True)
+    """`skip_upload=True` short-circuits the upload stage and leaves success=True."""
+    result = orchestrator.run_pipeline("prompt skip", job_id="job-skip", skip_upload=True)
 
-    assert status["ok"] is True
-    assert status["stages"]["upload"]["status"] == "skipped"
+    assert result["success"] is True
+    assert result["video_id"] is None
+    assert "upload" in result["stages_completed"]
     assert mocked_services["upload"] == 0
     # The other stages still ran.
+    on_disk = json.loads(filepaths.status_path("job-skip").read_text(encoding="utf-8"))
     for stage in ("script", "tts", "captions", "clips", "render"):
-        assert status["stages"][stage]["status"] == "done"
+        assert on_disk["stages"][stage]["status"] == "done"
+    assert on_disk["stages"]["upload"]["status"] == "skipped"
 
 
 def test_resume_from_script(mocked_services, redirected_dirs):
@@ -186,9 +188,11 @@ def test_resume_from_script(mocked_services, redirected_dirs):
         pre.model_dump_json(indent=2), encoding="utf-8"
     )
 
-    status = orchestrator.run_pipeline("any prompt", job_id=job_id, skip_upload=True)
+    result = orchestrator.run_pipeline("any prompt", job_id=job_id, skip_upload=True)
 
-    assert status["stages"]["script"]["status"] == "cache-hit"
+    assert result["success"] is True
+    on_disk = json.loads(filepaths.status_path(job_id).read_text(encoding="utf-8"))
+    assert on_disk["stages"]["script"]["status"] == "cache-hit"
     assert mocked_services["script"] == 0
     # Remaining stages still ran.
     assert mocked_services["tts"] == 1
@@ -245,10 +249,12 @@ def test_failure_in_clips_skips_render_and_upload(
 def test_job_id_override_places_artifacts_under_custom_dir(
     mocked_services, redirected_dirs: Path
 ):
-    status = orchestrator.run_pipeline(
+    result = orchestrator.run_pipeline(
         "custom", job_id="custom-id", skip_upload=True
     )
-    assert status["job_id"] == "custom-id"
+    assert result["success"] is True
+    on_disk = json.loads(filepaths.status_path("custom-id").read_text(encoding="utf-8"))
+    assert on_disk["job_id"] == "custom-id"
     generated = redirected_dirs / "generated" / "custom-id"
     rendered = redirected_dirs / "rendered" / "custom-id"
     assert (generated / "script.json").exists()
@@ -256,6 +262,40 @@ def test_job_id_override_places_artifacts_under_custom_dir(
     assert (generated / "captions.ass").exists()
     assert (generated / "status.json").exists()
     assert (rendered / "final.mp4").exists()
+
+
+def test_return_format_includes_required_keys(mocked_services, redirected_dirs):
+    """Verify run_pipeline returns dict with success, video_id, stages_completed, error."""
+    result = orchestrator.run_pipeline("prompt", job_id="job-format")
+
+    # Check required keys are present
+    assert "success" in result
+    assert "video_id" in result
+    assert "stages_completed" in result
+    assert "error" in result
+
+    # Check types
+    assert isinstance(result["success"], bool)
+    assert isinstance(result["video_id"], (str, type(None)))
+    assert isinstance(result["stages_completed"], list)
+    assert isinstance(result["error"], (str, type(None)))
+
+    # Success case: all stages completed, no error
+    assert result["success"] is True
+    assert result["video_id"] == "vid-123"
+    assert len(result["stages_completed"]) == 6
+    assert result["error"] is None
+
+
+def test_account_parameter_accepted(mocked_services, redirected_dirs):
+    """Verify account parameter is accepted (for future multi-account support)."""
+    # Should not raise an exception when account parameter is passed
+    result = orchestrator.run_pipeline(
+        "prompt",
+        job_id="job-account",
+        account={"oauth_token": "test-token"},
+    )
+    assert result["success"] is True
 
 
 def test_cli_help_exits_zero_and_mentions_prompt():

@@ -264,17 +264,80 @@ def _upload_fresh(job_id: str) -> str | None:
 
 
 # --------------------------------------------------------------------------- #
+# Result formatting
+# --------------------------------------------------------------------------- #
+
+def _format_run_result(
+    stages: dict[str, StageResult], skip_upload: bool
+) -> dict[str, Any]:
+    """Format pipeline execution result into the public API format.
+
+    Returns a dict with:
+    - success (bool): True if all stages completed without error
+    - video_id (str|None): YouTube video ID if uploaded, None otherwise
+    - stages_completed (list[str]): Stages with status "done" or "cache-hit"
+    - error (str|None): Error message from first failed stage, or None
+    """
+    # Collect completed stages (successful runs, not pending/failed/skipped)
+    stages_completed = [
+        name for name in _STAGE_NAMES
+        if stages[name].status in ("done", "cache-hit")
+    ]
+
+    # If upload was skipped, count it as completed
+    if skip_upload and stages["upload"].status == "skipped":
+        stages_completed.append("upload")
+
+    # Find first error
+    error: str | None = None
+    for stage in _STAGE_NAMES:
+        if stages[stage].status == "failed":
+            error = stages[stage].error
+            break
+
+    # Extract video_id from upload stage if present
+    video_id: str | None = stages["upload"].extra.get("video_id")
+
+    # Success means all stages were done/cache-hit and no errors
+    success = error is None and len(stages_completed) == len(_STAGE_NAMES)
+
+    return {
+        "success": success,
+        "video_id": video_id,
+        "stages_completed": stages_completed,
+        "error": error,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Public entry point
 # --------------------------------------------------------------------------- #
 
 def run_pipeline(
-    prompt: str, *, job_id: str | None = None, skip_upload: bool = False
+    prompt: str,
+    *,
+    job_id: str | None = None,
+    skip_upload: bool = False,
+    account: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Run the full pipeline. Returns the final status dict.
+    """Run the full pipeline. Returns a dict with execution results.
 
-    - `job_id`: optional override (otherwise derived from `prompt`).
-    - `skip_upload`: if True, stops after render (useful for local testing).
+    Args:
+        prompt: The user prompt for content generation.
+        job_id: Optional override (otherwise derived from `prompt`).
+        skip_upload: If True, stops after render (useful for local testing).
+        account: Optional account dict (for multi-account support). Currently unused.
+
+    Returns:
+        A dict with keys:
+        - success (bool): True if all stages completed without error
+        - video_id (str|None): YouTube video ID if uploaded, None otherwise
+        - stages_completed (list[str]): Names of stages that ran successfully
+        - error (str|None): Error message from first failure, None if success=True
     """
+    # Suppress unused parameter warning for future use
+    _ = account
+
     jid = job_id or filepaths.make_job_id(prompt)
     filepaths.ensure_job_dirs(jid)
     stages: dict[str, StageResult] = {name: StageResult() for name in _STAGE_NAMES}
@@ -327,7 +390,7 @@ def run_pipeline(
             stages["upload"] = result
 
         flush(True)
-        return json.loads(filepaths.status_path(jid).read_text(encoding="utf-8"))
+        return _format_run_result(stages, skip_upload)
 
     except _StageFailure as failure:
         stages[failure.stage] = StageResult(
@@ -355,8 +418,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     try:
-        status = run_pipeline(args.prompt, job_id=args.job_id, skip_upload=args.skip_upload)
-        return 0 if status["ok"] else 1
+        result = run_pipeline(args.prompt, job_id=args.job_id, skip_upload=args.skip_upload)
+        # CLI backward compatibility: exit 0 on success, 1 on error, 2 on exception
+        return 0 if result["success"] else 1
     except Exception as exc:
         print(f"{_LOG_PREFIX} pipeline failed: {exc}", file=sys.stderr)
         return 2
