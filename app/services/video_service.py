@@ -340,3 +340,22 @@ def generate_hook_clip(script: Script) -> Path:
     cache.write_hash_file(hash_path, expected)
     print(f"{_LOG_PREFIX} wrote hook {artifact_path} via fal.ai")
     return artifact_path
+
+
+def generate_hook_plus_images(script: Script) -> list[Path]:
+    """Scene 1 as video (via `generate_hook_clip`), scenes 2..N as PNGs.
+
+    Returns paths in scene order. Shape is `[.mp4, .png, .png, ...]` on the
+    happy path or `[.png, .png, .png, ...]` if the hook fell back to image.
+    Sequential (no ThreadPoolExecutor) — only one fal.ai call; image
+    generation is I/O-bound but fast enough that added complexity is not
+    justified.
+    """
+    paths: list[Path] = [generate_hook_clip(script)]
+    for scene in script.scenes[1:]:
+        paths.append(
+            visual_service.generate_scene_image(
+                scene.image_prompt, script.job_id, scene.id
+            )
+        )
+    return paths
