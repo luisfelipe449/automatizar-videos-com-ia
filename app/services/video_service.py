@@ -49,6 +49,15 @@ _DOWNLOAD_TIMEOUT_S = 120
 # this; sequential generation of 8 scenes takes 20+ minutes worst-case.
 _MAX_WORKERS = 4
 
+# Appended to scene 1's image_prompt when USE_VIDEO_HOOK=true to bias fal.ai
+# LTX Video toward cinematic motion. Constant so cache keys (hashed from the
+# RAW image_prompt) remain stable across runs — see
+# docs/superpowers/specs/2026-05-02-hook-video-design.md for rationale.
+_HOOK_PROMPT_SUFFIX = (
+    " a highly detailed animation video with cinematic lighting, "
+    "Unreal Engine 5, and depth of field."
+)
+
 
 class VideoGenerationError(RuntimeError):
     """Raised when fal.ai fails — BEFORE the visual_service fallback kicks in.
