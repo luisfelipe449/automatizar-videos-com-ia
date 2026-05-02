@@ -308,3 +308,42 @@ def test_cli_help_exits_zero_and_mentions_prompt():
     )
     assert proc.returncode == 0, proc.stderr
     assert "prompt" in proc.stdout.lower()
+
+
+def test_stage_clips_uses_hook_flow_when_configured(monkeypatch, redirected_dirs, tmp_path):
+    """USE_VIDEO=false + USE_VIDEO_HOOK=true → hook flow, not all-image, not all-video."""
+    from app import config, orchestrator
+    from app.services import visual_service, video_service
+
+    monkeypatch.setattr(config, "USE_VIDEO", False)
+    monkeypatch.setattr(config, "USE_VIDEO_HOOK", True)
+
+    called = {"hook": 0, "all_video": 0, "all_images": 0}
+
+    def fake_hook(script):
+        called["hook"] += 1
+        return [tmp_path / "scene_01.mp4", tmp_path / "scene_02.png", tmp_path / "scene_03.png"]
+
+    def fake_all_video(script):
+        called["all_video"] += 1
+        return []
+
+    def fake_all_images(script):
+        called["all_images"] += 1
+        return []
+
+    monkeypatch.setattr(
+        "app.services.video_service.generate_hook_plus_images", fake_hook
+    )
+    monkeypatch.setattr(
+        "app.services.video_service.generate_all_scene_clips", fake_all_video
+    )
+    monkeypatch.setattr(
+        "app.orchestrator.generate_all_scene_images", fake_all_images
+    )
+
+    script = _make_script("orch-hook-test")
+    result = orchestrator._stage_clips(script)
+
+    assert called == {"hook": 1, "all_video": 0, "all_images": 0}
+    assert len(result) == 3
