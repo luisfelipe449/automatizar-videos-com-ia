@@ -293,3 +293,50 @@ def generate_all_scene_clips(script: Script) -> list[Path]:
             results[idx] = future.result()
 
     return [p for p in results if p is not None]
+
+
+def generate_hook_clip(script: Script) -> Path:
+    """Produce `scene_01.mp4` via fal.ai using an AUGMENTED prompt.
+
+    Used by the `USE_VIDEO_HOOK` pipeline mode: only scene 1 becomes a video;
+    the rest stay as images. Prompt sent to fal.ai is
+    `scene.image_prompt + _HOOK_PROMPT_SUFFIX`. Cache hash is computed from
+    the RAW prompt (not augmented) so `orchestrator._clips_fresh` — which
+    hashes raw prompts — remains compatible.
+
+    On ANY fal.ai failure (including quota/credit exhaustion, missing
+    FAL_KEY, moderation), transparently falls back to
+    `visual_service.generate_scene_image`, returning a `.png` path.
+    Callers MUST check the suffix of the returned path.
+    """
+    scene = script.scenes[0]
+    filepaths.ensure_job_dirs(script.job_id)
+
+    # Moderation runs over the RAW prompt; blocklist is about user content,
+    # not our motion suffix.
+    visual_service._moderate(scene.image_prompt)
+
+    artifact_path = filepaths.scene_video_path(script.job_id, scene.id)
+    hash_path = filepaths.scene_video_hash_path(script.job_id, scene.id)
+    expected = cache.hash_text(scene.image_prompt)
+
+    if cache.artifact_fresh(artifact_path, hash_path, expected):
+        print(f"{_LOG_PREFIX} hook cache hit {artifact_path}")
+        return artifact_path
+
+    augmented = scene.image_prompt + _HOOK_PROMPT_SUFFIX
+
+    try:
+        _attempt_fal(augmented, script.job_id, artifact_path)
+    except VideoGenerationError as exc:
+        _unlink_quiet(artifact_path)
+        print(
+            f"{_LOG_PREFIX} hook scene failed; falling back to image: {exc}"
+        )
+        return visual_service.generate_scene_image(
+            scene.image_prompt, script.job_id, scene.id
+        )
+
+    cache.write_hash_file(hash_path, expected)
+    print(f"{_LOG_PREFIX} wrote hook {artifact_path} via fal.ai")
+    return artifact_path
