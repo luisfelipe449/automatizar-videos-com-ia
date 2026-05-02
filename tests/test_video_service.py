@@ -486,3 +486,46 @@ def test_generate_hook_clip_falls_back_on_payment_error(monkeypatch, patched_env
     # No leftover .mp4 artifact on disk.
     mp4_path = filepaths.scene_video_path("hook-payment", 1)
     assert not mp4_path.exists()
+
+
+def test_generate_hook_clip_falls_back_when_fal_key_missing(monkeypatch, tmp_path: Path):
+    """Missing FAL_KEY → immediate fallback to visual_service PNG (no fal.ai retry)."""
+    # Manually isolate dirs (we're NOT using `patched_env` here because it sets FAL_KEY).
+    generated = tmp_path / "generated"
+    rendered = tmp_path / "rendered"
+    monkeypatch.setattr("app.utils.filepaths.GENERATED_DIR", generated)
+    monkeypatch.setattr("app.utils.filepaths.RENDERED_DIR", rendered)
+    monkeypatch.delenv("FAL_KEY", raising=False)
+
+    from app.utils import quota
+    quota._unavailable.clear()
+
+    from app.services import video_service
+    from app.utils import filepaths
+
+    # fal_client.subscribe must NOT be called — assert by failing if it is.
+    called = {"subscribe": 0}
+
+    def forbidden_subscribe(*args, **kwargs):
+        called["subscribe"] += 1
+        raise AssertionError("fal.ai must not be called when FAL_KEY is missing")
+
+    monkeypatch.setattr("app.services.video_service.fal_client.subscribe", forbidden_subscribe)
+
+    png_path = filepaths.scene_image_path("hook-nokey", 1)
+
+    def fake_image(prompt, job_id, scene_id):
+        png_path.parent.mkdir(parents=True, exist_ok=True)
+        png_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        return png_path
+
+    monkeypatch.setattr(
+        "app.services.video_service.visual_service.generate_scene_image",
+        fake_image,
+    )
+
+    script = _make_script(job_id="hook-nokey")
+    result = video_service.generate_hook_clip(script)
+
+    assert result.suffix == ".png"
+    assert called["subscribe"] == 0
