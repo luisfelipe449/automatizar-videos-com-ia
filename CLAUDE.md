@@ -34,7 +34,7 @@ The pipeline runs locally, renders with FFmpeg at 1080x1920 (9:16), and supports
 1. `script`: Generate Script from prompt via Groq/Bedrock LLM
 2. `tts`: Synthesize narration audio via Gemini TTS → WAV
 3. `captions`: Transcribe WAV via Groq Whisper → ASS format with karaoke timing
-4. `clips`: Generate scene images (Pollinations primary, Imagen fallback) OR videos (fal.ai LTX Video when `USE_VIDEO=true`)
+4. `clips`: Generate scene images (Pollinations primary, Imagen fallback), OR all-videos (fal.ai LTX Video when `USE_VIDEO=true`), OR hook-only video (fal.ai LTX Video for scene 1 only when `USE_VIDEO_HOOK=true`)
 5. `render`: FFmpeg composition - Ken Burns zoompan on images, scale+crop on videos, burn captions, mux audio
 6. `upload`: YouTube Data API v3 resumable upload with OAuth2 refresh token
 
@@ -213,6 +213,7 @@ See `.env.example` for full documentation. Critical ones:
 - `LLM_PROVIDER`: `groq` (default) or `bedrock` for AWS Claude
 - `IMAGE_PROVIDER`: `pollinations` (default, free) or `imagen` (paid)
 - `USE_VIDEO`: `true` to enable per-scene video clips via fal.ai LTX Video (requires `FAL_KEY`)
+- `USE_VIDEO_HOOK`: `true` to make only scene 1 a video (cheaper than full `USE_VIDEO`). Requires `FAL_KEY`. Ignored when `USE_VIDEO=true`.
 - `FFMPEG_PATH`: path to ffmpeg binary (empty = use PATH)
 - `YOUTUBE_PRIVACY_STATUS`: `private` (default) | `unlisted` | `public`
 
