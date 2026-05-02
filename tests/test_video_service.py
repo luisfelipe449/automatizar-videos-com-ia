@@ -553,3 +553,43 @@ def test_generate_hook_clip_cache_hit(monkeypatch, patched_env, tmp_path: Path):
     result = video_service.generate_hook_clip(script)
 
     assert result == mp4_path
+
+
+def test_generate_hook_plus_images_returns_mixed_paths(monkeypatch, patched_env, no_backoff, tmp_path: Path):
+    """Hook succeeds + 2 image scenes → result is [.mp4, .png, .png] in order."""
+    from app.services import video_service
+    from app.utils import filepaths
+
+    fake_mp4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2000
+    _patch_fal_subscribe(monkeypatch, [_fake_fal_result("https://fal/clip.mp4")])
+
+    def fake_get(url, timeout=None, stream=False):
+        return _FakeStreamResponse(status_code=200, content=fake_mp4)
+
+    monkeypatch.setattr("app.services.video_service.requests.get", fake_get)
+    monkeypatch.setattr(
+        "app.services.video_service.probe_duration", lambda _p: 5.0
+    )
+
+    # Mock image generation for scenes 2, 3.
+    def fake_image(prompt, job_id, scene_id):
+        path = filepaths.scene_image_path(job_id, scene_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        return path
+
+    monkeypatch.setattr(
+        "app.services.video_service.visual_service.generate_scene_image",
+        fake_image,
+    )
+
+    script = _make_script(job_id="hook-mixed")
+    result = video_service.generate_hook_plus_images(script)
+
+    assert len(result) == 3
+    assert result[0].suffix == ".mp4"
+    assert result[0].name == "scene_01.mp4"
+    assert result[1].suffix == ".png"
+    assert result[1].name == "scene_02.png"
+    assert result[2].suffix == ".png"
+    assert result[2].name == "scene_03.png"
