@@ -59,6 +59,16 @@ IMAGE_PROVIDER: str = os.getenv("IMAGE_PROVIDER", "pollinations").strip().lower(
 USE_VIDEO: bool = os.getenv("USE_VIDEO", "false").strip().lower() in ("true", "1", "yes")
 
 # -----------------------------------------------------------------------------
+# Optional hook-only video mode.
+# -----------------------------------------------------------------------------
+# When USE_VIDEO_HOOK is truthy AND USE_VIDEO is falsy, the visuals stage
+# generates a single MP4 for scene 1 (via fal.ai LTX Video) while scenes
+# 2..N stay as PNGs. Captures the "hook" retention boost of motion without
+# paying for a full-video Short. Ignored when USE_VIDEO=true (USE_VIDEO
+# wins — all scenes become video).
+USE_VIDEO_HOOK: bool = os.getenv("USE_VIDEO_HOOK", "false").strip().lower() in ("true", "1", "yes")
+
+# -----------------------------------------------------------------------------
 # Model names (overridable via env).
 # -----------------------------------------------------------------------------
 GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
