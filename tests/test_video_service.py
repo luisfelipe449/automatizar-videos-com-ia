@@ -451,3 +451,38 @@ def test_generate_hook_clip_happy_path(monkeypatch, patched_env, no_backoff, tmp
     assert state["calls"][0]["arguments"]["prompt"] == (
         "prompt um" + video_service._HOOK_PROMPT_SUFFIX
     )
+
+
+def test_generate_hook_clip_falls_back_on_payment_error(monkeypatch, patched_env, no_backoff, tmp_path: Path):
+    """fal.ai raises with 'payment' → fallback to visual_service PNG."""
+    from app.services import video_service
+    from app.utils import filepaths
+
+    def raising_subscribe(endpoint, arguments=None, **kwargs):
+        raise RuntimeError("402 payment required")
+
+    monkeypatch.setattr("app.services.video_service.fal_client.subscribe", raising_subscribe)
+
+    # Fake visual_service.generate_scene_image to avoid real Pollinations calls.
+    png_path = filepaths.scene_image_path("hook-payment", 1)
+
+    def fake_image(prompt, job_id, scene_id):
+        png_path.parent.mkdir(parents=True, exist_ok=True)
+        png_path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
+        return png_path
+
+    monkeypatch.setattr(
+        "app.services.video_service.visual_service.generate_scene_image",
+        fake_image,
+    )
+
+    script = _make_script(job_id="hook-payment")
+    result = video_service.generate_hook_clip(script)
+
+    assert result.suffix == ".png"
+    assert result == png_path
+    assert result.exists()
+
+    # No leftover .mp4 artifact on disk.
+    mp4_path = filepaths.scene_video_path("hook-payment", 1)
+    assert not mp4_path.exists()
