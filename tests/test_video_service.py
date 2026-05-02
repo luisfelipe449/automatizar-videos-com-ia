@@ -529,3 +529,27 @@ def test_generate_hook_clip_falls_back_when_fal_key_missing(monkeypatch, tmp_pat
 
     assert result.suffix == ".png"
     assert called["subscribe"] == 0
+
+
+def test_generate_hook_clip_cache_hit(monkeypatch, patched_env, tmp_path: Path):
+    """Pre-seeded MP4 + matching hash → no fal.ai call."""
+    from app.services import video_service
+    from app.utils import cache, filepaths
+
+    job_id = "hook-cached"
+    filepaths.ensure_job_dirs(job_id)
+
+    mp4_path = filepaths.scene_video_path(job_id, 1)
+    hash_path = filepaths.scene_video_hash_path(job_id, 1)
+    mp4_path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2000)
+    cache.write_hash_file(hash_path, cache.hash_text("prompt um"))
+
+    def forbidden_subscribe(*args, **kwargs):
+        raise AssertionError("fal.ai must not be called on cache hit")
+
+    monkeypatch.setattr("app.services.video_service.fal_client.subscribe", forbidden_subscribe)
+
+    script = _make_script(job_id=job_id)
+    result = video_service.generate_hook_clip(script)
+
+    assert result == mp4_path
