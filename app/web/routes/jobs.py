@@ -57,6 +57,7 @@ def create_job(
     prompt: str = Form(...),
     priority: int = Form(0),
     account_id: int = Form(...),
+    category: int = Form(24),
     job_queue: JobQueueManager = Depends(get_job_queue_manager),
     db: Session = Depends(get_db),
 ):
@@ -66,6 +67,7 @@ def create_job(
         prompt: Job prompt text
         priority: Job priority (higher = first)
         account_id: Required account ID to use
+        category: YouTube category ID (default: 24 = Entertainment)
         job_queue: Job queue manager dependency
         db: Database session
 
@@ -88,7 +90,7 @@ def create_job(
             detail=f"Account '{account.name}' doesn't have enough quota. Available: {quota_available}, needed: {quota_needed}"
         )
 
-    job_queue.enqueue(prompt=prompt, priority=priority, account_id=account_id)
+    job_queue.enqueue(prompt=prompt, priority=priority, account_id=account_id, category=category)
     return RedirectResponse(url="/jobs", status_code=303)
 
 

@@ -181,8 +181,8 @@ def _stage_render(
     ))
 
 
-def _stage_upload(script: Script, video_path: Path) -> str:
-    return upload_short(video_path, script)
+def _stage_upload(script: Script, video_path: Path, category: int | None = None) -> str:
+    return upload_short(video_path, script, category=category)
 
 
 def _tts_fresh(script: Script) -> Path | None:
@@ -319,6 +319,7 @@ def run_pipeline(
     job_id: str | None = None,
     skip_upload: bool = False,
     account: dict[str, Any] | None = None,
+    category: int | None = None,
 ) -> dict[str, Any]:
     """Run the full pipeline. Returns a dict with execution results.
 
@@ -327,6 +328,7 @@ def run_pipeline(
         job_id: Optional override (otherwise derived from `prompt`).
         skip_upload: If True, stops after render (useful for local testing).
         account: Optional account dict (for multi-account support). Currently unused.
+        category: YouTube category ID (default: 24 = Entertainment).
 
     Returns:
         A dict with keys:
@@ -383,7 +385,7 @@ def run_pipeline(
         else:
             video_id, result = _run_stage(
                 "upload",
-                lambda: _stage_upload(script, video_path),
+                lambda: _stage_upload(script, video_path, category),
                 check_cache=lambda: _upload_fresh(jid),
             )
             result.extra["video_id"] = video_id

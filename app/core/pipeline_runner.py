@@ -115,7 +115,8 @@ class PipelineRunner:
                     prompt=job.prompt,
                     job_id=job_id,
                     skip_upload=False,
-                    account=account_dict
+                    account=account_dict,
+                    category=job.category
                 )
             finally:
                 # Restore environment variables

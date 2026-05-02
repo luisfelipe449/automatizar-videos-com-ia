@@ -54,6 +54,7 @@ class Job(Base):
     job_id = Column(String(255), unique=True, nullable=False)
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True)
     prompt = Column(Text, nullable=False)
+    category = Column(Integer, default=24, nullable=False)  # YouTube category ID (default: Entertainment)
     status = Column(String(50), nullable=False)  # pending/running/completed/failed
     stage = Column(String(50), nullable=True)  # script/tts/captions/visual/render/upload
     error_message = Column(Text, nullable=True)

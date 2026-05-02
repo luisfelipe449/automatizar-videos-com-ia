@@ -195,13 +195,15 @@ def upload_short(
     script: Script,
     *,
     privacy_status: str | None = None,
+    category: int | None = None,
 ) -> str:
     """Upload the rendered MP4 as a YouTube Short.
 
     Returns the uploaded `videoId`. Writes a JSON record to
     `filepaths.upload_record_path(script.job_id)`. Raises `YouTubeUploadError`
     on any validation or API failure. `privacy_status` (if provided) overrides
-    `config.YOUTUBE_PRIVACY_STATUS`.
+    `config.YOUTUBE_PRIVACY_STATUS`. `category` (if provided) overrides the
+    default Entertainment category.
     """
     video_path = Path(video_path)
     privacy = _validate_inputs(video_path, privacy_status)
@@ -214,7 +216,7 @@ def upload_short(
             "title": script.title,
             "description": _ensure_shorts_hashtag(script.description),
             "tags": list(script.tags),
-            "categoryId": _CATEGORY_ENTERTAINMENT,
+            "categoryId": category if category is not None else _CATEGORY_ENTERTAINMENT,
             # Mark the video's metadata + audio track as English (BCP-47).
             # Matches the script_service system prompt (English-only output)
             # and caption_service Whisper (language="en"). YouTube uses

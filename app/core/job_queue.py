@@ -28,7 +28,8 @@ class JobQueueManager:
         self,
         prompt: str,
         priority: int = 0,
-        account_id: int | None = None
+        account_id: int | None = None,
+        category: int = 24
     ) -> Job:
         """Create new pending job.
 
@@ -36,6 +37,7 @@ class JobQueueManager:
             prompt: User input text
             priority: Higher values execute first (default 0)
             account_id: Optional account assignment (None = auto-assign by worker)
+            category: YouTube category ID (default: 24 = Entertainment)
 
         Returns:
             Created Job instance
@@ -58,6 +60,7 @@ class JobQueueManager:
             job_id=job_id,
             account_id=account_id,
             prompt=prompt,
+            category=category,
             status="pending",
             priority=priority
         )
