@@ -156,15 +156,22 @@ def _stage_captions(script: Script) -> Path:
 def _stage_clips(script: Script) -> list[Path]:
     """Generate all scene clips.
 
-    When `config.USE_VIDEO` is true, delegates to `video_service` which
-    produces one MP4 per scene via fal.ai LTX Video (with PNG fallback on
-    per-scene failure). Otherwise the MVP image-per-scene path is used.
+    Branches on config flags:
+    - `USE_VIDEO=true`: every scene is a video (via fal.ai, parallel).
+    - `USE_VIDEO_HOOK=true` (and USE_VIDEO=false): scene 1 is a video,
+      scenes 2..N are images.
+    - Otherwise: every scene is an image (MVP default).
+
+    USE_VIDEO takes precedence when both flags are set.
     """
     from app import config
 
     if config.USE_VIDEO:
         from app.services.video_service import generate_all_scene_clips
         return generate_all_scene_clips(script)
+    if config.USE_VIDEO_HOOK:
+        from app.services.video_service import generate_hook_plus_images
+        return generate_hook_plus_images(script)
     return generate_all_scene_images(script)
 
 
