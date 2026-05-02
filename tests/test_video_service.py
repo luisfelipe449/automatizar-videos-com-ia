@@ -7,6 +7,23 @@ from pathlib import Path
 import pytest
 import requests
 
+from app.models import Scene, Script
+
+
+def _make_script(job_id: str = "hook-test") -> Script:
+    return Script(
+        job_id=job_id,
+        title="Hook test",
+        description="Teste hook #Shorts",
+        tags=["teste"],
+        narration="Narração de teste.",
+        scenes=[
+            Scene(id=1, scene_text="C1", image_prompt="prompt um", duration_seconds=3),
+            Scene(id=2, scene_text="C2", image_prompt="prompt dois", duration_seconds=3),
+            Scene(id=3, scene_text="C3", image_prompt="prompt três", duration_seconds=3),
+        ],
+    )
+
 
 # --------------------------------------------------------------------------- #
 # Fake fal.ai response + streaming requests helpers
@@ -396,3 +413,41 @@ def test_generate_all_scene_clips_mixed_success_and_fallback(
     assert paths[0].suffix == ".mp4"
     assert paths[1].suffix == ".png"
     assert paths[2].suffix == ".mp4"
+
+
+def test_generate_hook_clip_happy_path(monkeypatch, patched_env, no_backoff, tmp_path: Path):
+    """fal.ai succeeds → scene_01.mp4 written, hash = raw image_prompt hash."""
+    from app.services import video_service
+    from app.utils import cache, filepaths
+
+    # Minimal valid MP4 (ffprobe-probeable content faked via monkeypatch below)
+    fake_mp4 = b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 2000
+
+    state = _patch_fal_subscribe(monkeypatch, [_fake_fal_result("https://fal/fake.mp4")])
+
+    def fake_get(url, timeout=None, stream=False):
+        assert url == "https://fal/fake.mp4"
+        return _FakeStreamResponse(status_code=200, content=fake_mp4)
+
+    monkeypatch.setattr("app.services.video_service.requests.get", fake_get)
+    # Skip ffprobe validation — not testing ffmpeg here.
+    monkeypatch.setattr(
+        "app.services.video_service.probe_duration", lambda _p: 5.0
+    )
+
+    script = _make_script(job_id="hook-happy")
+    result = video_service.generate_hook_clip(script)
+
+    assert result.suffix == ".mp4"
+    assert result.name == "scene_01.mp4"
+    assert result.exists()
+
+    # Cache hash must be over the RAW image_prompt, not the augmented one.
+    hash_file = filepaths.scene_video_hash_path("hook-happy", 1)
+    assert hash_file.read_text(encoding="utf-8").strip() == cache.hash_text("prompt um")
+
+    # fal.ai was called with the AUGMENTED prompt (raw + suffix).
+    assert len(state["calls"]) == 1
+    assert state["calls"][0]["arguments"]["prompt"] == (
+        "prompt um" + video_service._HOOK_PROMPT_SUFFIX
+    )
