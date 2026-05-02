@@ -15,8 +15,16 @@ from app.core.account_manager import AccountManager, AccountManagerError
 router = APIRouter()
 templates = Jinja2Templates(directory="app/web/templates")
 
+# Google adds `openid` when email/profile are requested, so relax scope matching.
+os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
+
 # OAuth configuration
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "openid",
+]
 REDIRECT_URI = "http://127.0.0.1:8000/accounts/oauth/callback"
 
 # Store states temporarily (in production, use Redis or database)
@@ -106,27 +114,6 @@ def create_account(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-@router.post("/{account_id}/toggle")
-def toggle_account(
-    account_id: int,
-    account_mgr: AccountManager = Depends(get_account_manager),
-):
-    """Toggle account active status.
-
-    Args:
-        account_id: Account ID
-        account_mgr: Account manager dependency
-
-    Returns:
-        Redirect to accounts list
-    """
-    try:
-        account_mgr.toggle_active(account_id)
-        return RedirectResponse(url="/accounts", status_code=303)
-    except AccountManagerError as exc:
-        raise HTTPException(status_code=404, detail=str(exc))
-
-
 @router.get("/oauth/start")
 def start_oauth_flow(request: Request):
     """Start OAuth flow for adding account.
@@ -143,6 +130,9 @@ def start_oauth_flow(request: Request):
             detail="OAuth credentials not configured. Set YOUTUBE_WEB_CLIENT_ID and YOUTUBE_WEB_CLIENT_SECRET in .env"
         )
 
+    # Generate a random PKCE code_verifier (43-128 chars, unreserved set)
+    code_verifier = secrets.token_urlsafe(64)
+
     # Create OAuth flow
     flow = Flow.from_client_config(
         client_config={
@@ -156,6 +146,7 @@ def start_oauth_flow(request: Request):
         },
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI,
+        code_verifier=code_verifier,
     )
 
     # Generate state for CSRF protection
@@ -166,10 +157,11 @@ def start_oauth_flow(request: Request):
         state=state,
     )
 
-    # Store flow in temporary storage
+    # Store flow data including PKCE code_verifier in temporary storage
     _oauth_states[state] = {
         "client_id": client_id,
         "client_secret": client_secret,
+        "code_verifier": code_verifier,
     }
 
     return RedirectResponse(url=authorization_url)
@@ -218,6 +210,7 @@ def oauth_callback(
         },
         scopes=SCOPES,
         redirect_uri=REDIRECT_URI,
+        code_verifier=oauth_data["code_verifier"],
     )
 
     flow.fetch_token(code=code)
@@ -229,8 +222,21 @@ def oauth_callback(
         "https://www.googleapis.com/oauth2/v2/userinfo",
         headers={"Authorization": f"Bearer {credentials.token}"},
     )
+    if not userinfo_response.ok:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Failed to fetch user info from Google "
+                f"({userinfo_response.status_code}): {userinfo_response.text}"
+            ),
+        )
     userinfo = userinfo_response.json()
-    email = userinfo.get("email", "unknown@gmail.com")
+    email = userinfo.get("email")
+    if not email:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Google userinfo response missing email: {userinfo}",
+        )
 
     # Generate account name from email
     account_name = email.split("@")[0].replace(".", " ").title()
@@ -262,3 +268,24 @@ def oauth_callback(
             return RedirectResponse(url="/accounts?success=oauth", status_code=303)
         except AccountManagerError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/{account_id}/toggle")
+def toggle_account(
+    account_id: int,
+    account_mgr: AccountManager = Depends(get_account_manager),
+):
+    """Toggle account active status.
+
+    Args:
+        account_id: Account ID
+        account_mgr: Account manager dependency
+
+    Returns:
+        Redirect to accounts list
+    """
+    try:
+        account_mgr.toggle_active(account_id)
+        return RedirectResponse(url="/accounts", status_code=303)
+    except AccountManagerError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
