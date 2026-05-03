@@ -5,7 +5,8 @@ import os
 from contextlib import contextmanager
 from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 # Base class for all models
@@ -16,6 +17,22 @@ _DEFAULT_DATABASE_URL = os.getenv(
     "DATABASE_URL",
     f"sqlite:///{Path(__file__).resolve().parent.parent.parent / 'data' / 'app.db'}"
 )
+
+
+def _apply_sqlite_pragmas(dbapi_connection, connection_record) -> None:
+    """PRAGMAs de concorrência aplicados a TODA conexão SQLite nova.
+
+    - journal_mode=WAL: leitores não bloqueiam escritor; writers ainda
+      serializam mas sem bloquear leituras concorrentes.
+    - busy_timeout=5000: aguarda até 5s em contenção antes de devolver
+      SQLITE_BUSY. Evita que workers concorrentes exploquem sob load.
+    """
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+    finally:
+        cursor.close()
 
 
 def get_engine(database_url: str | None = None):
@@ -34,7 +51,13 @@ def get_engine(database_url: str | None = None):
     if url.startswith("sqlite"):
         connect_args = {"check_same_thread": False}
 
-    return create_engine(url, connect_args=connect_args, echo=False)
+    engine = create_engine(url, connect_args=connect_args, echo=False)
+
+    # WAL + busy_timeout só pra SQLite. Outros drivers não têm esses pragmas.
+    if url.startswith("sqlite"):
+        event.listen(engine, "connect", _apply_sqlite_pragmas)
+
+    return engine
 
 
 # Global engine and session factory (initialized on first import)
