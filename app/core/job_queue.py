@@ -199,3 +199,25 @@ class JobQueueManager:
         self.session.refresh(job)
 
         return job
+
+    def reset_orphan_running(self, account_id: int) -> int:
+        """Reset jobs stuck in 'running' for a given account back to 'pending'.
+
+        Intended to be called at worker startup. In the worker-per-account
+        model, the worker owning `account_id` is the ONLY process that runs
+        jobs for it — so any `running` job on startup is orphaned (previous
+        worker crashed). Resets status to `pending` and clears `started_at`
+        so the loop can re-claim them.
+
+        Returns the number of jobs reset (0 if none were orphaned).
+        """
+        updated = (
+            self.session.query(Job)
+            .filter(Job.account_id == account_id, Job.status == "running")
+            .update(
+                {Job.status: "pending", Job.started_at: None},
+                synchronize_session=False,
+            )
+        )
+        self.session.commit()
+        return int(updated)

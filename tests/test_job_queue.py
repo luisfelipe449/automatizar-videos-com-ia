@@ -126,3 +126,73 @@ def test_retry_failed_job_resets_to_pending(test_db):
         assert retried_job.error_message is None
         assert retried_job.account_id is None
         assert retried_job.started_at is None
+
+
+def test_reset_orphan_running_resets_only_given_account(test_db):
+    """reset_orphan_running(N) deve resetar só jobs com account_id=N em running."""
+    with get_session(test_db) as session:
+        acc_a = Account(
+            name="A", email="a@x", client_id="ca", client_secret="sa",
+            refresh_token="ra", quota_reset_at=datetime.now(timezone.utc),
+        )
+        acc_b = Account(
+            name="B", email="b@x", client_id="cb", client_secret="sb",
+            refresh_token="rb", quota_reset_at=datetime.now(timezone.utc),
+        )
+        session.add_all([acc_a, acc_b])
+        session.commit()
+
+        running_a = Job(
+            job_id="job-a-running", account_id=acc_a.id, prompt="a1",
+            status="running", started_at=datetime.now(timezone.utc),
+        )
+        pending_a = Job(
+            job_id="job-a-pending", account_id=acc_a.id, prompt="a2",
+            status="pending",
+        )
+        running_b = Job(
+            job_id="job-b-running", account_id=acc_b.id, prompt="b1",
+            status="running", started_at=datetime.now(timezone.utc),
+        )
+        session.add_all([running_a, pending_a, running_b])
+        session.commit()
+
+        acc_a_id = acc_a.id
+
+        manager = JobQueueManager(session)
+        count = manager.reset_orphan_running(account_id=acc_a_id)
+
+        assert count == 1
+
+        # Re-fetch to verify state
+        running_a_after = session.query(Job).filter_by(job_id="job-a-running").one()
+        running_b_after = session.query(Job).filter_by(job_id="job-b-running").one()
+        pending_a_after = session.query(Job).filter_by(job_id="job-a-pending").one()
+        assert running_a_after.status == "pending"
+        assert running_a_after.started_at is None
+        assert running_b_after.status == "running"  # not touched — different account
+        assert pending_a_after.status == "pending"  # not touched — was already pending
+
+
+def test_reset_orphan_running_is_idempotent(test_db):
+    """Chamar duas vezes: primeira reseta, segunda retorna 0."""
+    with get_session(test_db) as session:
+        acc = Account(
+            name="C", email="c@x", client_id="cc", client_secret="sc",
+            refresh_token="rc", quota_reset_at=datetime.now(timezone.utc),
+        )
+        session.add(acc)
+        session.commit()
+
+        job = Job(
+            job_id="job-c", account_id=acc.id, prompt="c",
+            status="running", started_at=datetime.now(timezone.utc),
+        )
+        session.add(job)
+        session.commit()
+
+        acc_id = acc.id
+
+        manager = JobQueueManager(session)
+        assert manager.reset_orphan_running(account_id=acc_id) == 1
+        assert manager.reset_orphan_running(account_id=acc_id) == 0
