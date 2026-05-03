@@ -295,3 +295,60 @@ def test_claim_next_pending_orders_by_priority_then_created_at(test_db):
         manager = JobQueueManager(session)
         claimed = manager.claim_next_pending(account_id=acc_id)
         assert claimed.job_id == "high-new"
+
+
+def test_claim_next_pending_is_atomic_under_concurrency(tmp_path):
+    """Duas threads claim simultâneo em 1 job pendente: só 1 ganha."""
+    import threading
+    from sqlalchemy import create_engine, event
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db.database import _apply_sqlite_pragmas
+
+    # File-backed SQLite so threads share state.
+    db_path = tmp_path / "concurrent.db"
+    url = f"sqlite:///{db_path}"
+    engine = create_engine(url, connect_args={"check_same_thread": False})
+    event.listen(engine, "connect", _apply_sqlite_pragmas)
+    Base.metadata.create_all(engine)
+
+    Session = sessionmaker(bind=engine)
+
+    # Seed: one account, one pending job.
+    seed = Session()
+    acc = Account(
+        name="A", email="a@x", client_id="ca", client_secret="sa",
+        refresh_token="ra", quota_reset_at=datetime.now(timezone.utc),
+    )
+    seed.add(acc)
+    seed.commit()
+    seed.add(Job(job_id="only", account_id=acc.id, prompt="p", status="pending"))
+    seed.commit()
+    account_id = acc.id
+    seed.close()
+
+    # Barrier so both threads fire the UPDATE at (almost) the same instant.
+    barrier = threading.Barrier(2)
+    results: list = [None, None]
+
+    def worker(idx: int) -> None:
+        session = Session()
+        try:
+            mgr = JobQueueManager(session)
+            barrier.wait(timeout=5)
+            results[idx] = mgr.claim_next_pending(account_id=account_id)
+        finally:
+            session.close()
+
+    t1 = threading.Thread(target=worker, args=(0,))
+    t2 = threading.Thread(target=worker, args=(1,))
+    t1.start(); t2.start()
+    t1.join(); t2.join()
+
+    # Exactly one won.
+    winners = [r for r in results if r is not None]
+    losers = [r for r in results if r is None]
+    assert len(winners) == 1, f"expected 1 winner, got {len(winners)}"
+    assert len(losers) == 1, f"expected 1 loser, got {len(losers)}"
+    assert winners[0].job_id == "only"
+    assert winners[0].status == "running"
