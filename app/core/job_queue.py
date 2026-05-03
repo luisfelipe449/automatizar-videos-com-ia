@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import datetime, timezone
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.models import Account, Job, Upload
@@ -221,3 +222,38 @@ class JobQueueManager:
         )
         self.session.commit()
         return int(updated)
+
+    def claim_next_pending(self, account_id: int) -> Job | None:
+        """Atomically claim the next pending job for `account_id`.
+
+        Replaces the old read-then-update pattern (`get_next_pending` +
+        `update_status`) which had a race window. Uses a single
+        `UPDATE ... RETURNING` so two concurrent workers cannot claim the
+        same job — SQLite serializes writers; the loser sees zero rows.
+
+        The `ORDER BY priority DESC, created_at ASC` inside the subquery
+        mirrors `get_next_pending` so existing priority semantics are
+        preserved.
+        """
+        stmt = text(
+            """
+            UPDATE jobs
+            SET status = 'running',
+                started_at = CURRENT_TIMESTAMP
+            WHERE id = (
+                SELECT id FROM jobs
+                WHERE status = 'pending' AND account_id = :account_id
+                ORDER BY priority DESC, created_at ASC
+                LIMIT 1
+            )
+            AND status = 'pending'
+            RETURNING id
+            """
+        )
+        result = self.session.execute(stmt, {"account_id": account_id})
+        row = result.first()
+        self.session.commit()
+        if row is None:
+            return None
+        # Reload through the ORM so relationships + typed attrs are available.
+        return self.session.query(Job).filter(Job.id == row[0]).one()

@@ -196,3 +196,102 @@ def test_reset_orphan_running_is_idempotent(test_db):
         manager = JobQueueManager(session)
         assert manager.reset_orphan_running(account_id=acc_id) == 1
         assert manager.reset_orphan_running(account_id=acc_id) == 0
+
+
+def test_claim_next_pending_marks_job_running_and_returns_it(test_db):
+    """Claim atômico: retorna o job e muda status pra 'running' no mesmo passo."""
+    with get_session(test_db) as session:
+        acc = Account(
+            name="A", email="a@x", client_id="ca", client_secret="sa",
+            refresh_token="ra", quota_reset_at=datetime.now(timezone.utc),
+        )
+        session.add(acc)
+        session.commit()
+
+        job = Job(
+            job_id="job-1", account_id=acc.id, prompt="p",
+            status="pending", priority=0,
+        )
+        session.add(job)
+        session.commit()
+
+        acc_id = acc.id
+
+        manager = JobQueueManager(session)
+        claimed = manager.claim_next_pending(account_id=acc_id)
+
+        assert claimed is not None
+        assert claimed.job_id == "job-1"
+        assert claimed.status == "running"
+        assert claimed.started_at is not None
+
+
+def test_claim_next_pending_returns_none_when_queue_empty(test_db):
+    """Sem jobs pendentes pra conta → retorna None."""
+    with get_session(test_db) as session:
+        acc = Account(
+            name="A", email="a@x", client_id="ca", client_secret="sa",
+            refresh_token="ra", quota_reset_at=datetime.now(timezone.utc),
+        )
+        session.add(acc)
+        session.commit()
+        acc_id = acc.id
+
+        manager = JobQueueManager(session)
+        assert manager.claim_next_pending(account_id=acc_id) is None
+
+
+def test_claim_next_pending_respects_account_isolation(test_db):
+    """Worker da conta A nunca pega job da conta B."""
+    with get_session(test_db) as session:
+        acc_a = Account(
+            name="A", email="a@x", client_id="ca", client_secret="sa",
+            refresh_token="ra", quota_reset_at=datetime.now(timezone.utc),
+        )
+        acc_b = Account(
+            name="B", email="b@x", client_id="cb", client_secret="sb",
+            refresh_token="rb", quota_reset_at=datetime.now(timezone.utc),
+        )
+        session.add_all([acc_a, acc_b])
+        session.commit()
+
+        job_b = Job(job_id="job-b", account_id=acc_b.id, prompt="p", status="pending")
+        session.add(job_b)
+        session.commit()
+
+        acc_a_id = acc_a.id
+
+        manager = JobQueueManager(session)
+        assert manager.claim_next_pending(account_id=acc_a_id) is None
+
+        job_b_after = session.query(Job).filter_by(job_id="job-b").one()
+        assert job_b_after.status == "pending"
+
+
+def test_claim_next_pending_orders_by_priority_then_created_at(test_db):
+    """Prioridade maior primeiro; em empate, mais antigo primeiro."""
+    with get_session(test_db) as session:
+        acc = Account(
+            name="A", email="a@x", client_id="ca", client_secret="sa",
+            refresh_token="ra", quota_reset_at=datetime.now(timezone.utc),
+        )
+        session.add(acc)
+        session.commit()
+
+        now = datetime.now(timezone.utc)
+        low_old = Job(
+            job_id="low-old", account_id=acc.id, prompt="p", status="pending",
+            priority=0, created_at=now - timedelta(minutes=10),
+        )
+        high_new = Job(
+            job_id="high-new", account_id=acc.id, prompt="p", status="pending",
+            priority=5, created_at=now,
+        )
+        session.add_all([low_old, high_new])
+        session.commit()
+
+        acc_id = acc.id
+
+        manager = JobQueueManager(session)
+        claimed = manager.claim_next_pending(account_id=acc_id)
+        assert claimed.job_id == "high-new"
