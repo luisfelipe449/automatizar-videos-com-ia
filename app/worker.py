@@ -1,68 +1,124 @@
-"""Background worker that processes jobs from the queue."""
+"""Background worker that processes jobs from the queue for ONE account.
+
+Model: one worker process per YouTube account. Parallelism comes from running
+N workers simultaneously (one per active account). A worker only claims jobs
+with `account_id == --account-id`; it is the sole authority for that
+account's queue, which is why startup can safely reset orphan `running` jobs
+without coordinating with other workers.
+"""
 from __future__ import annotations
 
-import time
+import argparse
 import sys
+import time
 
-from app.core.pipeline_runner import PipelineRunner
 from app.core.account_manager import AccountManager
 from app.core.job_queue import JobQueueManager
+from app.core.pipeline_runner import PipelineRunner
 from app.db.database import get_session
+from app.db.models import Account
+
+
+_IDLE_SLEEP_S = 5
+
+
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="python -m app.worker",
+        description="Process jobs for a single YouTube account.",
+    )
+    parser.add_argument(
+        "--account-id",
+        type=int,
+        required=True,
+        help="YouTube account ID (see `accounts` table). Worker will only "
+             "claim jobs belonging to this account.",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Process at most one job and exit. Used by tests and smoke runs.",
+    )
+    return parser.parse_args(argv)
+
+
+def _validate_account(session, account_id: int) -> Account | None:
+    """Return the account, or None if missing/inactive (with log to stderr)."""
+    acc = session.query(Account).filter_by(id=account_id).first()
+    if acc is None:
+        print(
+            f"[worker {account_id}] ERROR: account {account_id} not found",
+            file=sys.stderr,
+        )
+        return None
+    if not acc.is_active:
+        print(
+            f"[worker {account_id}] ERROR: account '{acc.name}' is inactive; "
+            f"activate it or run against a different --account-id",
+            file=sys.stderr,
+        )
+        return None
+    return acc
 
 
 def main() -> int:
-    """Main worker loop.
+    args = _parse_args()
+    account_id = args.account_id
+    tag = f"[worker {account_id}]"
 
-    Continuously polls for pending jobs and processes them.
-    Resets daily quotas for accounts past their reset time.
-    Sleeps briefly when queue is empty.
+    print(f"{tag} Starting job processor (one-per-account mode)")
+    if not args.once:
+        print(f"{tag} Press Ctrl+C to stop")
 
-    Returns:
-        Exit code (0 for success, 1 for error)
-    """
-    print("[worker] Starting job processor...")
-    print("[worker] Press Ctrl+C to stop")
+    # Startup: validate + reset orphans. Short-lived session.
+    with get_session() as session:
+        acc = _validate_account(session, account_id)
+        if acc is None:
+            return 1
+        job_mgr = JobQueueManager(session)
+        reset = job_mgr.reset_orphan_running(account_id=account_id)
+        if reset > 0:
+            print(f"{tag} Reset {reset} orphan running job(s) to pending")
 
     while True:
         try:
             with get_session() as session:
-                # Reset quotas for accounts past reset time
+                # Global quota reset is cheap; keep here for parity with old
+                # single-process worker behaviour.
                 account_mgr = AccountManager(session)
                 reset_count = account_mgr.reset_daily_quotas()
                 if reset_count > 0:
-                    print(f"[worker] Reset quotas for {reset_count} account(s)")
+                    print(f"{tag} Reset quotas for {reset_count} account(s)")
 
-                # Get next pending job
                 job_mgr = JobQueueManager(session)
-                job = job_mgr.get_next_pending()
+                job = job_mgr.claim_next_pending(account_id=account_id)
 
                 if job:
-                    print(f"[worker] Processing job: {job.job_id}")
-                    print(f"[worker]   Prompt: {job.prompt[:60]}...")
+                    print(f"{tag} Processing job: {job.job_id}")
+                    print(f"{tag}   Prompt: {job.prompt[:60]}...")
 
-                    # Process job
                     runner = PipelineRunner(session)
                     runner.run_job(job.job_id)
 
-                    print(f"[worker] Completed job: {job.job_id}")
+                    print(f"{tag} Completed job: {job.job_id}")
+                    if args.once:
+                        return 0
                 else:
-                    # No jobs available, sleep briefly
-                    time.sleep(5)
+                    if args.once:
+                        return 0
+                    time.sleep(_IDLE_SLEEP_S)
 
         except KeyboardInterrupt:
-            print("\n[worker] Shutting down gracefully...")
+            print(f"\n{tag} Shutting down gracefully...")
             return 0
 
         except Exception as exc:
-            # Log error and continue (don't crash the worker)
-            print(f"[worker] ERROR: {exc}")
+            print(f"{tag} ERROR: {exc}", file=sys.stderr)
             import traceback
             traceback.print_exc()
-
-            # Back off on errors to avoid tight error loops
-            time.sleep(5)
-
-    return 0
+            if args.once:
+                return 1
+            time.sleep(_IDLE_SLEEP_S)
 
 
 if __name__ == "__main__":
