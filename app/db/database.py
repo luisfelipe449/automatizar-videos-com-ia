@@ -29,7 +29,17 @@ def _apply_sqlite_pragmas(dbapi_connection, connection_record) -> None:
     """
     cursor = dbapi_connection.cursor()
     try:
-        cursor.execute("PRAGMA journal_mode=WAL")
+        # PRAGMA journal_mode=WAL returns the resulting mode. On some filesystems
+        # (network-mounted, read-only) the switch fails silently and the connection
+        # keeps its previous mode — which would leave concurrent workers
+        # deadlocking later with no obvious reason. Fail loudly at startup instead.
+        resulting_mode = cursor.execute("PRAGMA journal_mode=WAL").fetchone()
+        if resulting_mode is None or str(resulting_mode[0]).lower() != "wal":
+            raise RuntimeError(
+                f"SQLite refused to enable WAL mode (got {resulting_mode!r}). "
+                "Ensure the database file's directory is writable and not on "
+                "a filesystem that blocks WAL."
+            )
         cursor.execute("PRAGMA busy_timeout=5000")
     finally:
         cursor.close()

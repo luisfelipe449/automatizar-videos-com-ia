@@ -25,3 +25,21 @@ def test_sqlite_engine_sets_busy_timeout(tmp_path: Path) -> None:
     with engine.connect() as conn:
         timeout_ms = conn.execute(text("PRAGMA busy_timeout")).scalar()
     assert timeout_ms == 5000, f"expected busy_timeout=5000, got {timeout_ms}"
+
+
+def test_sqlite_engine_raises_if_wal_rejected(tmp_path: Path) -> None:
+    """If PRAGMA journal_mode=WAL doesn't return 'wal', startup must fail loudly."""
+    from unittest.mock import MagicMock
+    import pytest
+    from app.db import database as db_mod
+
+    db_path = tmp_path / "test.db"
+    engine = db_mod.get_engine(f"sqlite:///{db_path}")
+
+    fake_cursor = MagicMock()
+    fake_cursor.execute.return_value.fetchone.return_value = ("delete",)
+    fake_conn = MagicMock()
+    fake_conn.cursor.return_value = fake_cursor
+
+    with pytest.raises(RuntimeError, match="refused to enable WAL"):
+        db_mod._apply_sqlite_pragmas(fake_conn, None)
