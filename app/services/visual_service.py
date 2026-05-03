@@ -37,7 +37,11 @@ _JPEG_MAGIC = b"\xff\xd8\xff"
 _MIN_IMAGE_BYTES = 1000
 
 _POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"
-_POLLINATIONS_TIMEOUT_S = 60
+# Pollinations enfileira por prompt: prompts pesados (cinematic, 9:16, flux)
+# podem passar de 60s em horários de carga. 180s absorve a variação real
+# observada sem prejudicar falhas legítimas (o serviço costuma responder
+# em 5-15s no caminho quente).
+_POLLINATIONS_TIMEOUT_S = 180
 _ACCEPTED_CONTENT_TYPES = ("image/png", "image/jpeg")
 
 # Loud blocklist: Shorts policy violations should fail fast, not be scrubbed.
@@ -222,7 +226,9 @@ def _try_pollinations(image_prompt: str, job_id: str, artifact_path: Path, hash_
         return artifact_path
     except VisualGenerationError as exc:
         quota.mark_pollinations_unavailable(job_id)
-        return f"pollinations: {exc}"
+        msg = f"pollinations: {exc}"
+        print(f"{_LOG_PREFIX} {msg}")
+        return msg
 
 
 def _try_imagen(image_prompt: str, job_id: str, artifact_path: Path, hash_path: Path, expected: str) -> Path | str:
@@ -236,7 +242,9 @@ def _try_imagen(image_prompt: str, job_id: str, artifact_path: Path, hash_path: 
         print(f"{_LOG_PREFIX} wrote {artifact_path} via imagen ({len(data)} bytes)")
         return artifact_path
     except VisualGenerationError as exc:
-        return f"imagen: {exc}"
+        msg = f"imagen: {exc}"
+        print(f"{_LOG_PREFIX} {msg}")
+        return msg
 
 
 def generate_scene_image(image_prompt: str, job_id: str, scene_id: int) -> Path:
