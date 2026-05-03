@@ -86,14 +86,50 @@ python -m app.orchestrator --prompt "test" --job-id my-custom-id
 # Start web dashboard (terminal 1)
 uvicorn app.web.main:app --reload --port 8000
 
-# Start background worker (terminal 2)
-python -m app.worker
+# Start background worker for a specific account (terminal 2)
+# (Requires --account-id. See "Multi-Worker Mode" below to run N workers in parallel.)
+python -m app.worker --account-id 1
 
 # Dashboard will be at http://localhost:8000
 # - /accounts: manage YouTube accounts
 # - /jobs: create and monitor jobs
 # - /dashboard: analytics (quota usage, upload stats)
 ```
+
+### Multi-Worker Mode
+
+Cada conta YouTube pode ter seu próprio worker rodando em paralelo — quota
+isolada, credenciais isoladas, um pipeline por conta por vez.
+
+```bash
+# Worker para UMA conta específica (--account-id é obrigatório)
+python -m app.worker --account-id 1
+
+# --once: processa no máximo um job e sai (útil pra smoke tests)
+python -m app.worker --account-id 1 --once
+
+# Supervisor: spawna um worker por conta ativa no banco
+python scripts/run_workers.py
+```
+
+**Regra importante**: NUNCA rodar dois workers com o mesmo `--account-id`.
+O worker-por-conta é autoridade exclusiva sobre aquela conta; dois workers
+concorrentes podem resetar jobs que o outro está processando. O supervisor
+script já previne isso (1 subprocess por conta).
+
+**Recuperação de crash**: se um worker morrer com um job em `running`, ele
+será resetado pra `pending` automaticamente no próximo startup (na mesma
+conta) e re-processado. Idempotência do orchestrator garante que estágios
+já concluídos sejam reaproveitados.
+
+**Claim atômico**: `JobQueueManager.claim_next_pending(account_id)` usa
+`UPDATE ... RETURNING` num único statement. Dois workers simultâneos nunca
+pegam o mesmo job — SQLite serializa os writers e o perdedor recebe zero
+linhas.
+
+**WAL mode**: o engine SQLite é configurado com `PRAGMA journal_mode=WAL`
+e `PRAGMA busy_timeout=5000` (ver `app/db/database.py`). Sem isso, writers
+concorrentes bloqueiam o banco inteiro.
 
 ### Testing
 ```bash
@@ -343,7 +379,7 @@ Install via package manager:
 - Fix: Set `GEMINI_API_KEY` in `.env` to enable Imagen fallback
 
 ### Worker not processing jobs
-- Check worker is running: `python -m app.worker` should print `[worker] Starting job processor...`
+- Check worker is running: `python -m app.worker --account-id 1` should print `[worker] Starting job processor...`
 - Verify at least one account is active with quota
 - Check worker terminal for errors
 
