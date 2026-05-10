@@ -165,6 +165,23 @@ def test_video_title_defaults_to_prompt(monkeypatch, patched_env):
     assert "VIDEO_TITLE: fallback prompt text" in user_msg["content"]
 
 
+def test_system_prompt_contains_viral_facts_structure(monkeypatch, patched_env):
+    """Sanity check: the new system prompt exposes the 7-step structure
+    and the VIDEO_TITLE hook so the LLM has clear instructions."""
+    from app.services.script_service import _SYSTEM_PROMPT
+
+    assert "VIDEO_TITLE" in _SYSTEM_PROMPT
+    assert "Opening Hook" in _SYSTEM_PROMPT
+    assert "Intro Line" in _SYSTEM_PROMPT
+    assert "Fact List" in _SYSTEM_PROMPT
+    assert "CTA" in _SYSTEM_PROMPT or "Call-to-Action" in _SYSTEM_PROMPT
+    assert "Emotional Hooks" in _SYSTEM_PROMPT
+    assert "Closing" in _SYSTEM_PROMPT
+    # Ranking logic is gone.
+    assert "rank_title" not in _SYSTEM_PROMPT
+    assert "Top " not in _SYSTEM_PROMPT
+
+
 def test_malformed_json_triggers_validation_retry(monkeypatch, patched_env):
     from app.services.script_service import generate_script
 
