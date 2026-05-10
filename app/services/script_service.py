@@ -439,14 +439,24 @@ def _persist(script: Script) -> None:
     print(f"{_LOG_PREFIX} wrote {path}")
 
 
-def generate_script(prompt: str, *, job_id: str | None = None) -> Script:
+def generate_script(
+    prompt: str,
+    *,
+    job_id: str | None = None,
+    video_title: str | None = None,
+) -> Script:
     """Generate a YouTube Shorts script from a user prompt.
+
+    `video_title` is the title injected into the user message as
+    `VIDEO_TITLE: <title>`. When omitted, falls back to `prompt` so the
+    CLI (which has no separate title) still produces a valid message.
 
     If `job_id` is None, derives one via `filepaths.make_job_id(prompt)`.
     Raises `ScriptGenerationError` on unrecoverable failure.
     """
     import os as _os
     resolved_job_id = job_id or filepaths.make_job_id(prompt)
+    resolved_title = video_title if (video_title and video_title.strip()) else prompt
     provider, client = _build_client()
 
     # Optional override: if SCRIPT_PROMPT_FILE is set and exists, load its
@@ -460,9 +470,13 @@ def generate_script(prompt: str, *, job_id: str | None = None) -> Script:
         system_prompt = _SYSTEM_PROMPT
         print(f"{_LOG_PREFIX} provider={provider}")
 
+    user_content = (
+        f"Topic for the Short: {prompt}\n"
+        f"VIDEO_TITLE: {resolved_title}"
+    )
     base_messages: list[dict] = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Topic for the Short: {prompt}"},
+        {"role": "user", "content": user_content},
     ]
 
     # Attempt 1 — pristine prompt.

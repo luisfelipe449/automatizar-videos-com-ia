@@ -140,6 +140,31 @@ def test_happy_path_writes_script_json(monkeypatch, patched_env):
     assert len(FakeGroq.last_instance.calls) == 1
 
 
+def test_video_title_forwarded_to_user_message(monkeypatch, patched_env):
+    from app.services.script_service import generate_script
+
+    _install_fake_groq(monkeypatch, [json.dumps(_VALID_PAYLOAD)])
+
+    generate_script("topic text", video_title="My Awesome Title")
+
+    messages = FakeGroq.last_instance.calls[0]["messages"]
+    user_msg = next(m for m in messages if m["role"] == "user")
+    assert "Topic for the Short: topic text" in user_msg["content"]
+    assert "VIDEO_TITLE: My Awesome Title" in user_msg["content"]
+
+
+def test_video_title_defaults_to_prompt(monkeypatch, patched_env):
+    from app.services.script_service import generate_script
+
+    _install_fake_groq(monkeypatch, [json.dumps(_VALID_PAYLOAD)])
+
+    generate_script("fallback prompt text")
+
+    messages = FakeGroq.last_instance.calls[0]["messages"]
+    user_msg = next(m for m in messages if m["role"] == "user")
+    assert "VIDEO_TITLE: fallback prompt text" in user_msg["content"]
+
+
 def test_malformed_json_triggers_validation_retry(monkeypatch, patched_env):
     from app.services.script_service import generate_script
 
