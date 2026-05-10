@@ -138,7 +138,9 @@ def _load_cached_script(job_id: str) -> Script | None:
 
 
 def _stage_script(prompt: str, job_id: str) -> Script:
-    return generate_script(prompt, job_id=job_id)
+    # CLI/theme share the same scriptwriter. In CLI mode there's no
+    # separate title, so the prompt plays double duty: topic + title.
+    return generate_script(prompt, job_id=job_id, video_title=prompt)
 
 
 def _stage_tts(script: Script) -> Path:

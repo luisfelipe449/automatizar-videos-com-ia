@@ -63,7 +63,12 @@ def mocked_services(monkeypatch, redirected_dirs: Path):
 
     script_holder: dict[str, Script] = {}
 
-    def fake_generate_script(prompt: str, *, job_id: str | None = None) -> Script:
+    def fake_generate_script(
+        prompt: str,
+        *,
+        job_id: str | None = None,
+        video_title: str | None = None,
+    ) -> Script:
         calls["script"] += 1
         resolved = job_id or filepaths.make_job_id(prompt)
         script = _make_script(resolved)
@@ -347,3 +352,30 @@ def test_stage_clips_uses_hook_flow_when_configured(monkeypatch, redirected_dirs
 
     assert called == {"hook": 1, "all_video": 0, "all_images": 0}
     assert len(result) == 3
+
+
+def test_stage_script_forwards_prompt_as_video_title(monkeypatch):
+    """CLI mode: _stage_script must pass prompt as video_title so the
+    scriptwriter sees VIDEO_TITLE: <prompt> in the user message."""
+    captured: dict[str, object] = {}
+
+    def fake_generate_script(
+        prompt: str,
+        *,
+        job_id: str | None = None,
+        video_title: str | None = None,
+    ) -> Script:
+        captured["prompt"] = prompt
+        captured["job_id"] = job_id
+        captured["video_title"] = video_title
+        return _make_script(job_id or "derived")
+
+    monkeypatch.setattr(orchestrator, "generate_script", fake_generate_script)
+
+    orchestrator._stage_script("my cli prompt", "job-abc")
+
+    assert captured == {
+        "prompt": "my cli prompt",
+        "job_id": "job-abc",
+        "video_title": "my cli prompt",
+    }
