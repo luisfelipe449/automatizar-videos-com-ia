@@ -87,6 +87,7 @@ Acesse http://localhost:8000 para ver o dashboard.
 #### 3. Iniciar o worker (terminal separado)
 
 ```bash
+python -m scripts.run_workers
 python -m app.worker
 ```
 

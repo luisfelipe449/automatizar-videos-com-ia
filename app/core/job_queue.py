@@ -30,7 +30,8 @@ class JobQueueManager:
         prompt: str,
         priority: int = 0,
         account_id: int | None = None,
-        category: int = 24
+        category: int = 24,
+        job_id: str | None = None,
     ) -> Job:
         """Create new pending job.
 
@@ -39,23 +40,30 @@ class JobQueueManager:
             priority: Higher values execute first (default 0)
             account_id: Optional account assignment (None = auto-assign by worker)
             category: YouTube category ID (default: 24 = Entertainment)
+            job_id: Optional explicit job_id. When provided, the caller is
+                responsible for uniqueness — useful when the caller has
+                already persisted artifacts under this id (e.g. theme-batch
+                flow pre-generates `script.json` via
+                `filepaths.make_job_id`). When None, a legacy
+                locally-slugified id is derived from the prompt.
 
         Returns:
             Created Job instance
         """
-        # Generate job_id: YYYY-MM-DD_slug_hash
-        now = datetime.now(timezone.utc)
-        date_str = now.strftime("%Y-%m-%d")
+        if job_id is None:
+            # Generate job_id: YYYY-MM-DD_slug_hash
+            now = datetime.now(timezone.utc)
+            date_str = now.strftime("%Y-%m-%d")
 
-        # Create slug from prompt (first 3 words, lowercase, replace spaces with hyphens)
-        slug = re.sub(r'[^\w\s-]', '', prompt.lower())[:50]
-        slug = re.sub(r'[-\s]+', '-', slug).strip('-')
-        words = slug.split('-')[:3]
-        slug = '-'.join(words) if words else 'untitled'
+            # Create slug from prompt (first 3 words, lowercase, replace spaces with hyphens)
+            slug = re.sub(r'[^\w\s-]', '', prompt.lower())[:50]
+            slug = re.sub(r'[-\s]+', '-', slug).strip('-')
+            words = slug.split('-')[:3]
+            slug = '-'.join(words) if words else 'untitled'
 
-        # Add hash for uniqueness
-        hash_short = hashlib.sha256(prompt.encode()).hexdigest()[:6]
-        job_id = f"{date_str}_{slug}_{hash_short}"
+            # Add hash for uniqueness
+            hash_short = hashlib.sha256(prompt.encode()).hexdigest()[:6]
+            job_id = f"{date_str}_{slug}_{hash_short}"
 
         job = Job(
             job_id=job_id,

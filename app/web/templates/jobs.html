@@ -106,13 +106,31 @@
 {% endif %}
 
 <!-- Create Job Modal -->
-<div id="createJobModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center">
-    <div class="bg-white rounded-lg shadow-xl p-6 max-w-lg w-full mx-4">
+<div id="createJobModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-40">
+    <div class="bg-white rounded-lg shadow-xl p-6 max-w-lg w-full mx-4 max-h-[90vh] overflow-y-auto">
         <h2 class="text-2xl font-bold text-gray-900 mb-4">Create New Job</h2>
-        <form method="POST" action="/jobs/create" class="space-y-4">
+
+        <!-- Mode toggle -->
+        <div class="mb-4 p-3 bg-gray-50 rounded-md">
+            <label class="block text-sm font-medium text-gray-700 mb-2">Modo</label>
+            <div class="flex space-x-4">
+                <label class="inline-flex items-center cursor-pointer">
+                    <input type="radio" name="mode" value="theme" checked onchange="updateModeUI()"
+                        class="text-blue-600 focus:ring-blue-500">
+                    <span class="ml-2 text-sm text-gray-800">Tema (5 vídeos)</span>
+                </label>
+                <label class="inline-flex items-center cursor-pointer">
+                    <input type="radio" name="mode" value="single" onchange="updateModeUI()"
+                        class="text-blue-600 focus:ring-blue-500">
+                    <span class="ml-2 text-sm text-gray-800">Prompt único</span>
+                </label>
+            </div>
+        </div>
+
+        <form id="createJobForm" method="POST" action="/jobs/create" class="space-y-4">
             <div>
-                <label for="prompt" class="block text-sm font-medium text-gray-700 mb-1">
-                    Prompt <span class="text-red-500">*</span>
+                <label for="prompt" id="promptLabel" class="block text-sm font-medium text-gray-700 mb-1">
+                    Tema <span class="text-red-500">*</span>
                 </label>
                 <textarea
                     id="prompt"
@@ -120,8 +138,9 @@
                     required
                     rows="4"
                     class="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Enter video topic or script prompt..."
+                    placeholder="ex: buracos negros, curiosidades sobre polvos"
                 ></textarea>
+                <p id="promptHelp" class="mt-1 text-sm text-gray-500">Um tema gera 5 roteiros distintos, cada um virando um job.</p>
             </div>
 
             <div>
@@ -136,7 +155,8 @@
                 >
                     <option value="">-- Select an account --</option>
                     {% for account in accounts %}
-                    <option value="{{ account.id }}">
+                    <option value="{{ account.id }}"
+                        data-quota-available="{{ account.daily_quota - account.quota_used }}">
                         {{ account.name }} - {{ account.email }} (Quota: {{ account.daily_quota - account.quota_used }}/{{ account.daily_quota }} available)
                     </option>
                     {% endfor %}
@@ -182,12 +202,15 @@
                 <p class="mt-1 text-sm text-gray-500">Higher values execute first (default: 0)</p>
             </div>
 
+            <div id="anglesError" class="hidden p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-md"></div>
+
             <div class="flex space-x-4 pt-4">
                 <button
+                    id="primaryButton"
                     type="submit"
-                    class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded"
+                    class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                    Create Job
+                    Gerar ângulos
                 </button>
                 <button
                     type="button"
@@ -200,4 +223,269 @@
         </form>
     </div>
 </div>
+
+<!-- Angles Preview Modal -->
+<div id="anglesModal" class="hidden fixed inset-0 bg-gray-600 bg-opacity-50 flex items-center justify-center z-50">
+    <div class="bg-white rounded-lg shadow-xl p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+        <h2 class="text-2xl font-bold text-gray-900 mb-2">Revisar ângulos</h2>
+        <p class="text-sm text-gray-600 mb-4">
+            Edite os títulos ou prompts antes de confirmar. Ao confirmar, a aplicação gera os roteiros e enfileira os jobs.
+        </p>
+
+        <div id="anglesList" class="space-y-4 mb-4"></div>
+
+        <div id="batchError" class="hidden p-3 bg-red-50 border border-red-200 text-red-700 text-sm rounded-md mb-4"></div>
+
+        <div class="flex space-x-4 pt-2 border-t border-gray-200">
+            <button
+                id="confirmAnglesButton"
+                type="button"
+                onclick="confirmAngles()"
+                class="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-6 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                Confirmar e criar jobs
+            </button>
+            <button
+                type="button"
+                onclick="regenerateAngles()"
+                id="regenerateButton"
+                class="bg-yellow-500 hover:bg-yellow-600 text-white font-medium py-2 px-4 rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+                Regerar todos
+            </button>
+            <button
+                type="button"
+                onclick="closeAnglesModal()"
+                class="bg-gray-300 hover:bg-gray-400 text-gray-800 font-medium py-2 px-6 rounded"
+            >
+                Cancelar
+            </button>
+        </div>
+    </div>
+</div>
+
+<script>
+    const ANGLES_COUNT = 5;
+
+    function updateModeUI() {
+        const mode = document.querySelector('input[name="mode"]:checked').value;
+        const label = document.getElementById('promptLabel');
+        const prompt = document.getElementById('prompt');
+        const help = document.getElementById('promptHelp');
+        const primary = document.getElementById('primaryButton');
+        const form = document.getElementById('createJobForm');
+
+        if (mode === 'theme') {
+            label.innerHTML = 'Tema <span class="text-red-500">*</span>';
+            prompt.placeholder = 'ex: buracos negros, curiosidades sobre polvos';
+            help.textContent = 'Um tema gera 5 roteiros distintos, cada um virando um job.';
+            primary.textContent = 'Gerar ângulos';
+            form.onsubmit = handleThemeSubmit;
+        } else {
+            label.innerHTML = 'Prompt <span class="text-red-500">*</span>';
+            prompt.placeholder = 'Enter video topic or script prompt...';
+            help.textContent = 'Higher values execute first (default: 0)';
+            primary.textContent = 'Create Job';
+            form.onsubmit = null;
+            // Single-prompt mode uses native form POST to /jobs/create.
+        }
+    }
+
+    async function handleThemeSubmit(evt) {
+        evt.preventDefault();
+        const theme = document.getElementById('prompt').value.trim();
+        const accountSelect = document.getElementById('account_id');
+        if (!theme) return;
+        if (!accountSelect.value) {
+            showCreateError('Selecione uma conta antes de continuar.');
+            return;
+        }
+        // Client-side quota sanity check — server re-validates anyway.
+        const quotaAvailable = parseInt(
+            accountSelect.options[accountSelect.selectedIndex].dataset.quotaAvailable || '0',
+            10
+        );
+        const quotaNeeded = 1600 * ANGLES_COUNT;
+        if (quotaAvailable < quotaNeeded) {
+            showCreateError(
+                `Conta selecionada tem quota insuficiente. Disponível: ${quotaAvailable}, necessário: ${quotaNeeded}.`
+            );
+            return;
+        }
+        hideCreateError();
+
+        const primary = document.getElementById('primaryButton');
+        primary.disabled = true;
+        primary.textContent = 'Gerando ângulos...';
+
+        try {
+            const resp = await fetch('/jobs/generate-angles', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({theme: theme, count: ANGLES_COUNT}),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({detail: resp.statusText}));
+                showCreateError('Falha ao gerar ângulos: ' + (err.detail || resp.statusText));
+                return;
+            }
+            const data = await resp.json();
+            openAnglesModal(data.angles, theme);
+        } catch (e) {
+            showCreateError('Erro de rede: ' + e.message);
+        } finally {
+            primary.disabled = false;
+            primary.textContent = 'Gerar ângulos';
+        }
+    }
+
+    function showCreateError(msg) {
+        const el = document.getElementById('anglesError');
+        el.textContent = msg;
+        el.classList.remove('hidden');
+    }
+    function hideCreateError() {
+        document.getElementById('anglesError').classList.add('hidden');
+    }
+
+    function openAnglesModal(angles, theme) {
+        const list = document.getElementById('anglesList');
+        list.innerHTML = '';
+        angles.forEach((angle, idx) => {
+            const card = document.createElement('div');
+            card.className = 'border border-gray-200 rounded-md p-3 bg-gray-50';
+            card.innerHTML = `
+                <div class="text-xs font-semibold text-gray-500 mb-2">Ângulo ${idx + 1}</div>
+                <label class="block text-xs text-gray-600 mb-1">Título</label>
+                <input type="text" data-field="title" data-idx="${idx}"
+                    class="w-full px-2 py-1 mb-2 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                    value="${escapeHtml(angle.title)}">
+                <label class="block text-xs text-gray-600 mb-1">Prompt</label>
+                <textarea data-field="prompt" data-idx="${idx}" rows="2"
+                    class="w-full px-2 py-1 border border-gray-300 rounded text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                >${escapeHtml(angle.prompt)}</textarea>
+            `;
+            list.appendChild(card);
+        });
+        list.dataset.theme = theme;
+        document.getElementById('batchError').classList.add('hidden');
+        document.getElementById('createJobModal').classList.add('hidden');
+        document.getElementById('anglesModal').classList.remove('hidden');
+    }
+
+    function closeAnglesModal() {
+        document.getElementById('anglesModal').classList.add('hidden');
+        document.getElementById('createJobModal').classList.remove('hidden');
+    }
+
+    function collectEditedAngles() {
+        const inputs = document.querySelectorAll('#anglesList [data-field]');
+        const angles = [];
+        inputs.forEach((el) => {
+            const idx = parseInt(el.dataset.idx, 10);
+            if (!angles[idx]) angles[idx] = {title: '', prompt: ''};
+            angles[idx][el.dataset.field] = el.value.trim();
+        });
+        return angles;
+    }
+
+    async function regenerateAngles() {
+        const theme = document.getElementById('anglesList').dataset.theme;
+        const btn = document.getElementById('regenerateButton');
+        btn.disabled = true;
+        btn.textContent = 'Regerando...';
+        try {
+            const resp = await fetch('/jobs/generate-angles', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({theme: theme, count: ANGLES_COUNT}),
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({detail: resp.statusText}));
+                showBatchError('Falha ao regerar: ' + (err.detail || resp.statusText));
+                return;
+            }
+            const data = await resp.json();
+            openAnglesModal(data.angles, theme);
+        } catch (e) {
+            showBatchError('Erro de rede: ' + e.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Regerar todos';
+        }
+    }
+
+    async function confirmAngles() {
+        const angles = collectEditedAngles();
+        for (let i = 0; i < angles.length; i++) {
+            if (!angles[i].title || !angles[i].prompt) {
+                showBatchError(`Ângulo ${i + 1} tem título ou prompt vazio.`);
+                return;
+            }
+        }
+        const theme = document.getElementById('anglesList').dataset.theme;
+        const accountId = document.getElementById('account_id').value;
+        const category = document.getElementById('category').value;
+        const priority = document.getElementById('priority').value;
+
+        const btn = document.getElementById('confirmAnglesButton');
+        btn.disabled = true;
+        btn.textContent = 'Gerando roteiros...';
+        document.getElementById('regenerateButton').disabled = true;
+        hideBatchError();
+
+        try {
+            const form = new FormData();
+            form.append('theme', theme);
+            form.append('angles_json', JSON.stringify(angles));
+            form.append('account_id', accountId);
+            form.append('category', category);
+            form.append('priority', priority);
+
+            const resp = await fetch('/jobs/create-batch', {
+                method: 'POST',
+                body: form,
+                redirect: 'follow',
+            });
+            if (resp.redirected) {
+                window.location.href = resp.url;
+                return;
+            }
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({detail: resp.statusText}));
+                showBatchError(err.detail || resp.statusText);
+                return;
+            }
+            // Fallback — 2xx without redirect, just reload.
+            window.location.href = '/jobs';
+        } catch (e) {
+            showBatchError('Erro de rede: ' + e.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Confirmar e criar jobs';
+            document.getElementById('regenerateButton').disabled = false;
+        }
+    }
+
+    function showBatchError(msg) {
+        const el = document.getElementById('batchError');
+        el.textContent = msg;
+        el.classList.remove('hidden');
+    }
+    function hideBatchError() {
+        document.getElementById('batchError').classList.add('hidden');
+    }
+
+    function escapeHtml(s) {
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    // Initialize form handler for default mode (theme).
+    document.addEventListener('DOMContentLoaded', updateModeUI);
+</script>
 {% endblock %}

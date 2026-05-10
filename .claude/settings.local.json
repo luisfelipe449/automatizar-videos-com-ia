@@ -2,7 +2,20 @@
   "permissions": {
     "allow": [
       "Bash(git add *)",
-      "Bash(git commit -m ' *)"
+      "Bash(git commit -m ' *)",
+      "Bash(xargs grep -l \"batch\\\\|multi.*script\\\\|multiple.*script\")",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_script_service.py tests/test_web_routes.py tests/test_job_queue.py -v)",
+      "Bash(.venv/Scripts/python.exe -m pytest -v -m \"not slow\")",
+      "Bash(git stash *)",
+      "Bash(.venv/Scripts/python.exe -m pytest tests/test_orchestrator.py tests/test_pipeline_runner.py tests/test_youtube_service.py --tb=no -q)",
+      "Bash(.venv/Scripts/python.exe *)",
+      "Bash(python -m pytest -v tests/test_script_service.py)",
+      "Bash(python -c \"from app.services.script_service import _SYSTEM_PROMPT, _ANGLES_SYSTEM_PROMPT; print\\(len\\(_SYSTEM_PROMPT\\), len\\(_ANGLES_SYSTEM_PROMPT\\)\\)\")",
+      "Bash(python -c \"from app.services.script_service import _SYSTEM_PROMPT, _ANGLES_SYSTEM_PROMPT; print\\('_SYSTEM_PROMPT length:', len\\(_SYSTEM_PROMPT\\)\\); print\\('_ANGLES_SYSTEM_PROMPT length:', len\\(_ANGLES_SYSTEM_PROMPT\\)\\)\")",
+      "Bash(git diff *)",
+      "Bash(python -m pytest tests/test_script_service.py::test_video_title_forwarded_to_user_message tests/test_script_service.py::test_video_title_defaults_to_prompt -v)",
+      "Bash(python -m pytest tests/test_script_service.py -v)",
+      "Bash(git commit -m 'feat\\(script\\): add video_title kwarg to generate_script *)"
     ]
   }
 }

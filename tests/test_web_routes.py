@@ -1,6 +1,8 @@
 """Integration tests for web routes using FastAPI TestClient."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -16,6 +18,53 @@ def client():
     """
     app = create_app()
     return TestClient(app)
+
+
+@pytest.fixture
+def isolated_client(tmp_path, monkeypatch):
+    """Test client bound to a fresh SQLite DB with one active account.
+
+    Overrides `get_db` so all route handlers (including the JobQueueManager
+    dependency, which is `Depends(get_db)`) read/write the temp DB. Returns
+    (TestClient, account_id) so tests can target that account directly.
+    """
+    from app.db.database import Base, get_engine, get_session
+    from app.db.models import Account
+    from app.web.dependencies import get_db
+
+    # Redirect filesystem writes (script.json etc.) into the tmp dir so
+    # test runs don't pollute the repo's assets/ tree.
+    monkeypatch.setattr("app.utils.filepaths.GENERATED_DIR", tmp_path / "generated")
+    monkeypatch.setattr("app.utils.filepaths.RENDERED_DIR", tmp_path / "rendered")
+
+    db_path = tmp_path / "test.db"
+    engine = get_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(engine)
+
+    # Seed one active account with full quota.
+    with get_session(engine) as seed_session:
+        account = Account(
+            name="TestAccount",
+            email="test@example.com",
+            client_id="cid",
+            client_secret="csec",
+            refresh_token="rtok",
+            daily_quota=10000,
+            quota_used=0,
+            quota_reset_at=datetime.now(timezone.utc) + timedelta(hours=24),
+            is_active=True,
+        )
+        seed_session.add(account)
+        seed_session.flush()
+        account_id = account.id
+
+    def override_get_db():
+        with get_session(engine) as session:
+            yield session
+
+    app = create_app()
+    app.dependency_overrides[get_db] = override_get_db
+    return TestClient(app), account_id
 
 
 class TestAppStructure:
@@ -178,3 +227,252 @@ class TestJobSubmissionFlow:
         else:
             # Other status codes should be 422 (validation) or 200
             assert response.status_code in [200, 422, 500]
+
+
+# --------------------------------------------------------------------------- #
+# Theme-batch endpoints
+# --------------------------------------------------------------------------- #
+
+_FAKE_ANGLES = [
+    {"title": f"Angle {i}", "prompt": f"Unique prompt number {i} for the theme."}
+    for i in range(1, 6)
+]
+
+
+class TestGenerateAnglesEndpoint:
+    """POST /jobs/generate-angles — stateless preview."""
+
+    def test_returns_angles_on_success(self, isolated_client, monkeypatch):
+        client, _ = isolated_client
+
+        monkeypatch.setattr(
+            "app.services.script_service.generate_angles",
+            lambda theme, n=5: _FAKE_ANGLES[:n],
+        )
+
+        resp = client.post(
+            "/jobs/generate-angles",
+            json={"theme": "buracos negros", "count": 5},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "angles" in body
+        assert len(body["angles"]) == 5
+        assert body["angles"][0]["title"] == "Angle 1"
+
+    def test_rejects_empty_theme(self, isolated_client):
+        client, _ = isolated_client
+        resp = client.post("/jobs/generate-angles", json={"theme": "", "count": 5})
+        # Pydantic min_length=1 → 422
+        assert resp.status_code == 422
+
+    def test_returns_500_on_angles_generation_error(self, isolated_client, monkeypatch):
+        from app.services.script_service import AnglesGenerationError
+
+        client, _ = isolated_client
+
+        def boom(theme, n=5):
+            raise AnglesGenerationError("simulated LLM failure")
+
+        monkeypatch.setattr("app.services.script_service.generate_angles", boom)
+
+        resp = client.post(
+            "/jobs/generate-angles",
+            json={"theme": "qualquer", "count": 5},
+        )
+        assert resp.status_code == 500
+        assert "simulated LLM failure" in resp.json()["detail"]
+
+
+class TestCreateBatchEndpoint:
+    """POST /jobs/create-batch — all-or-nothing script gen + 5-job enqueue."""
+
+    def _form(self, account_id: int, angles=_FAKE_ANGLES) -> dict:
+        import json
+
+        return {
+            "theme": "buracos negros",
+            "angles_json": json.dumps(angles),
+            "account_id": str(account_id),
+            "category": "24",
+            "priority": "0",
+        }
+
+    def test_enqueues_n_jobs_on_success(self, isolated_client, monkeypatch):
+        from app.db.database import Base, get_engine, get_session
+        from app.db.models import Job
+
+        client, account_id = isolated_client
+
+        calls: list[str] = []
+        captured_titles: list[str | None] = []
+
+        def fake_generate_script(prompt, *, job_id=None, video_title=None):
+            calls.append(prompt)
+            captured_titles.append(video_title)
+            # Mimic side effect (persisting script.json) without touching disk.
+            return None
+
+        monkeypatch.setattr(
+            "app.services.script_service.generate_script", fake_generate_script
+        )
+
+        resp = client.post(
+            "/jobs/create-batch",
+            data=self._form(account_id),
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/jobs"
+        assert len(calls) == 5
+        assert captured_titles == [a["title"] for a in _FAKE_ANGLES]
+
+        # Inspect DB: 5 jobs inserted, same account, all pending.
+        engine = client.app.dependency_overrides[
+            __import__("app.web.dependencies", fromlist=["get_db"]).get_db
+        ].__wrapped__.__globals__.get("engine") if False else None
+        # Simpler: just open a new session through the API we know works.
+        # Pull jobs via /jobs list page.
+        list_resp = client.get("/jobs")
+        assert list_resp.status_code == 200
+        # Cross-check via direct query using the same connection URL by asking
+        # the override (its closure captures `engine`).
+        get_db_override = client.app.dependency_overrides.get(
+            __import__("app.web.dependencies", fromlist=["get_db"]).get_db
+        )
+        session_gen = get_db_override()
+        session = next(session_gen)
+        try:
+            pending = session.query(Job).filter_by(status="pending").all()
+            assert len(pending) == 5
+            # All jobs belong to the same account and their prompts are the angle prompts.
+            assert {j.account_id for j in pending} == {account_id}
+            assert {j.prompt for j in pending} == {a["prompt"] for a in _FAKE_ANGLES}
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_aborts_on_script_failure_no_jobs_enqueued(
+        self, isolated_client, monkeypatch
+    ):
+        from app.db.models import Job
+        from app.services.script_service import ScriptGenerationError
+
+        client, account_id = isolated_client
+        call_counter = {"n": 0}
+
+        def fake_generate_script(prompt, *, job_id=None, video_title=None):
+            call_counter["n"] += 1
+            if call_counter["n"] == 3:
+                raise ScriptGenerationError("simulated script failure")
+            return None
+
+        monkeypatch.setattr(
+            "app.services.script_service.generate_script", fake_generate_script
+        )
+
+        resp = client.post(
+            "/jobs/create-batch",
+            data=self._form(account_id),
+            follow_redirects=False,
+        )
+        assert resp.status_code == 500
+        assert "angle 3" in resp.json()["detail"].lower() or "angle 3" in resp.json()["detail"]
+        assert "No jobs were enqueued" in resp.json()["detail"]
+
+        # Confirm DB has zero jobs.
+        from app.web.dependencies import get_db
+
+        session_gen = client.app.dependency_overrides[get_db]()
+        session = next(session_gen)
+        try:
+            assert session.query(Job).count() == 0
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+    def test_rejects_insufficient_quota(self, isolated_client, monkeypatch):
+        from app.db.models import Account, Job
+        from app.web.dependencies import get_db
+
+        client, account_id = isolated_client
+
+        # Force the account down to 2 uploads' worth of quota (3200 of 10000).
+        session_gen = client.app.dependency_overrides[get_db]()
+        session = next(session_gen)
+        try:
+            acct = session.query(Account).filter_by(id=account_id).first()
+            acct.quota_used = acct.daily_quota - 3200
+            session.commit()
+        finally:
+            try:
+                next(session_gen)
+            except StopIteration:
+                pass
+
+        # generate_script should NEVER be called — quota is checked first.
+        def should_not_run(*_a, **_kw):
+            raise AssertionError("generate_script called despite quota shortfall")
+
+        monkeypatch.setattr(
+            "app.services.script_service.generate_script", should_not_run
+        )
+
+        resp = client.post(
+            "/jobs/create-batch",
+            data=self._form(account_id),
+            follow_redirects=False,
+        )
+        assert resp.status_code == 400
+        assert "quota" in resp.json()["detail"].lower()
+
+        # No jobs inserted.
+        session_gen2 = client.app.dependency_overrides[get_db]()
+        session2 = next(session_gen2)
+        try:
+            assert session2.query(Job).count() == 0
+        finally:
+            try:
+                next(session_gen2)
+            except StopIteration:
+                pass
+
+    def test_rejects_malformed_angles_json(self, isolated_client, monkeypatch):
+        client, account_id = isolated_client
+
+        def should_not_run(*_a, **_kw):
+            raise AssertionError("should not reach script generation")
+
+        monkeypatch.setattr(
+            "app.services.script_service.generate_script", should_not_run
+        )
+
+        bad = self._form(account_id)
+        bad["angles_json"] = "not json"
+        resp = client.post("/jobs/create-batch", data=bad, follow_redirects=False)
+        assert resp.status_code == 400
+        assert "angles_json" in resp.json()["detail"].lower()
+
+    def test_rejects_empty_angle_prompt(self, isolated_client, monkeypatch):
+        import json
+
+        client, account_id = isolated_client
+        angles = [dict(a) for a in _FAKE_ANGLES]
+        angles[2]["prompt"] = ""
+
+        def should_not_run(*_a, **_kw):
+            raise AssertionError("should not reach script generation")
+
+        monkeypatch.setattr(
+            "app.services.script_service.generate_script", should_not_run
+        )
+
+        form = self._form(account_id)
+        form["angles_json"] = json.dumps(angles)
+        resp = client.post("/jobs/create-batch", data=form, follow_redirects=False)
+        assert resp.status_code == 400
+        assert "angle 3" in resp.json()["detail"].lower()
