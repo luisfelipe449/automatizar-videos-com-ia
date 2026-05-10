@@ -189,3 +189,92 @@ def test_transient_connection_error_is_retried_by_default_retry(monkeypatch, pat
     assert script.title == _VALID_PAYLOAD["title"]
     # Two underlying create() invocations: 1 failure + 1 success, no validation retry needed.
     assert len(FakeGroq.last_instance.calls) == 2
+
+
+# --------------------------------------------------------------------------- #
+# generate_angles tests
+# --------------------------------------------------------------------------- #
+
+
+def _angles_payload(n: int = 5) -> str:
+    return json.dumps(
+        {
+            "angles": [
+                {
+                    "title": f"Angle {i} title",
+                    "prompt": f"Prompt for angle {i} on the given theme.",
+                }
+                for i in range(1, n + 1)
+            ]
+        }
+    )
+
+
+def test_generate_angles_returns_n_distinct_angles(monkeypatch, patched_env):
+    from app.services.script_service import generate_angles
+
+    _install_fake_groq(monkeypatch, [_angles_payload(5)])
+
+    angles = generate_angles("buracos negros", n=5)
+
+    assert isinstance(angles, list)
+    assert len(angles) == 5
+    titles = {a["title"] for a in angles}
+    assert len(titles) == 5  # all distinct
+    for angle in angles:
+        assert angle["title"]
+        assert angle["prompt"]
+    # Only one Groq call needed — the first response was valid.
+    assert len(FakeGroq.last_instance.calls) == 1
+
+
+def test_generate_angles_retries_on_malformed_json(monkeypatch, patched_env):
+    from app.services.script_service import generate_angles
+
+    _install_fake_groq(
+        monkeypatch,
+        ["not json at all {{{", _angles_payload(5)],
+    )
+
+    angles = generate_angles("tema x", n=5)
+
+    assert len(angles) == 5
+    assert len(FakeGroq.last_instance.calls) == 2
+    retry_messages = FakeGroq.last_instance.calls[1]["messages"]
+    # base system + user + corrective system = 3 turns
+    assert retry_messages[-1]["role"] == "system"
+    assert "invalid" in retry_messages[-1]["content"].lower()
+
+
+def test_generate_angles_rejects_wrong_count(monkeypatch, patched_env):
+    from app.services.script_service import AnglesGenerationError, generate_angles
+
+    # Model returns 3 angles but caller asked for 5 — both attempts fail.
+    _install_fake_groq(monkeypatch, [_angles_payload(3), _angles_payload(3)])
+
+    with pytest.raises(AnglesGenerationError, match="failed twice"):
+        generate_angles("tema", n=5)
+
+
+def test_generate_angles_rejects_duplicate_titles(monkeypatch, patched_env):
+    from app.services.script_service import AnglesGenerationError, generate_angles
+
+    dup = json.dumps(
+        {
+            "angles": [
+                {"title": "Same Title", "prompt": "a"},
+                {"title": "Same Title", "prompt": "b"},
+            ]
+        }
+    )
+    _install_fake_groq(monkeypatch, [dup, dup])
+
+    with pytest.raises(AnglesGenerationError, match="failed twice"):
+        generate_angles("tema", n=2)
+
+
+def test_generate_angles_rejects_empty_theme():
+    from app.services.script_service import generate_angles
+
+    with pytest.raises(ValueError, match="non-empty"):
+        generate_angles("   ", n=5)
