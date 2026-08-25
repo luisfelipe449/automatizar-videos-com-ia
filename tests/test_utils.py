@@ -227,3 +227,32 @@ def test_probe_duration_on_generated_silent_wav(monkeypatch, tmp_path: Path):
 
     duration = ff.probe_duration(wav)
     assert 0.9 <= duration <= 1.1, f"expected ~1.0s, got {duration}"
+
+
+# --------------------------------------------------------------------------- #
+# retries — explicit non-retryable opt-out
+# --------------------------------------------------------------------------- #
+
+def test_exception_can_opt_out_of_retrying():
+    """`retryable = False` beats the substring heuristic.
+
+    Quota exhaustion carries a 429 in its message, which the substring match
+    would otherwise classify as transient. The opt-out exists so a service can
+    say "this will not fix itself" without having to launder the message.
+    """
+    from app.utils.retries import is_retryable_http
+
+    class _Terminal(RuntimeError):
+        retryable = False
+
+    assert is_retryable_http(_Terminal("429 RESOURCE_EXHAUSTED quota")) is False
+    # Same message, no opt-out → still treated as transient.
+    assert is_retryable_http(RuntimeError("429 RESOURCE_EXHAUSTED quota")) is True
+
+
+def test_opt_out_does_not_affect_ordinary_exceptions():
+    """Absence of the attribute must not change existing classification."""
+    from app.utils.retries import is_retryable_http
+
+    assert is_retryable_http(RuntimeError("503 unavailable")) is True
+    assert is_retryable_http(RuntimeError("400 bad request")) is False

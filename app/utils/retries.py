@@ -49,7 +49,17 @@ _RETRYABLE_SUBSTRINGS: tuple[str, ...] = (
 
 
 def is_retryable_http(exc: BaseException) -> bool:
-    """Return True when `exc` looks like a transient network/HTTP error."""
+    """Return True when `exc` looks like a transient network/HTTP error.
+
+    An exception class can opt out with `retryable = False`. Quota exhaustion
+    needs this: providers report it as 429 RESOURCE_EXHAUSTED, which the
+    substring heuristic below reads as rate limiting, but a daily quota only
+    returns at the provider's reset — retrying just burns the backoff window
+    before failing anyway. The opt-out lets a service declare "this will not
+    fix itself" without having to launder the status code out of its message.
+    """
+    if getattr(exc, "retryable", True) is False:
+        return False
     if isinstance(exc, _RETRYABLE_EXC_TYPES):
         return True
     if isinstance(exc, _HTTP_STATUS_EXC_TYPES):
