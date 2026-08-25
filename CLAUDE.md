@@ -247,11 +247,64 @@ See `.env.example` for full documentation. Critical ones:
 
 **Optional**:
 - `LLM_PROVIDER`: `groq` (default) or `bedrock` for AWS Claude
+- `GROQ_MODEL`: Groq model for script generation (default `llama-3.3-70b-versatile`). Verify your key has access — the catalog varies per account and a missing model surfaces as a 404, not a clear error.
+- `GROQ_MAX_TOKENS` / `GROQ_REASONING_EFFORT`: needed when `GROQ_MODEL` is a reasoning model (`openai/gpt-oss-*`). See "Reasoning Models on Groq" below.
 - `IMAGE_PROVIDER`: `pollinations` (default, free) or `imagen` (paid)
 - `USE_VIDEO`: `true` to enable per-scene video clips via fal.ai LTX Video (requires `FAL_KEY`)
 - `USE_VIDEO_HOOK`: `true` to make only scene 1 a video (cheaper than full `USE_VIDEO`). Requires `FAL_KEY`. Ignored when `USE_VIDEO=true`.
 - `FFMPEG_PATH`: path to ffmpeg binary (empty = use PATH)
 - `YOUTUBE_PRIVACY_STATUS`: `private` (default) | `unlisted` | `public`
+- `TTS_VOICE`: Gemini prebuilt voice for narration (default `Kore`)
+- `SCRIPT_PROMPT_FILE` / `ANGLES_PROMPT_FILE`: replace the built-in system prompts with your own files. Set **both** when switching language — overriding only the scriptwriter leaves the angle titles (dashboard "Tema" batch mode) in English. Nonexistent paths are ignored, falling back to the built-in prompt.
+- `WHISPER_LANGUAGE`: ISO-639-1 hint for Whisper transcription (default `en`; use `pt` for Portuguese)
+- `YOUTUBE_VIDEO_LANGUAGE`: BCP-47 tag written to the uploaded video's `defaultLanguage` / `defaultAudioLanguage`. Empty = inherit `WHISPER_LANGUAGE`, so one variable normally sets a channel's language. Set it explicitly only for a region subtag ISO-639-1 can't express — `WHISPER_LANGUAGE` must stay `pt` while this can be `pt-BR`.
+
+### Running a Channel in Another Language
+
+A pt-BR prompt pair for the PropostaPronta marketing channel ships in `assets/input/`. To run that channel, set in `.env`:
+
+```bash
+SCRIPT_PROMPT_FILE=assets/input/prompt-propostapronta.md
+ANGLES_PROMPT_FILE=assets/input/prompt-angles-propostapronta.md
+WHISPER_LANGUAGE=pt
+YOUTUBE_VIDEO_LANGUAGE=pt-BR   # optional; `pt` is inherited if you omit it
+TTS_VOICE=Kore   # audition alternatives: Charon, Puck, Aoede, Leda
+```
+
+Language leaks into the upload, not just the render: YouTube feeds
+`defaultLanguage` / `defaultAudioLanguage` to auto-captions and
+recommendations, so a pt-BR Short tagged `en` is served to the wrong audience.
+The tag used to be hard-coded `"en"` in `youtube_service`; it now follows the
+config above.
+
+### Reasoning Models on Groq
+
+If `GROQ_MODEL` is a reasoning model (`openai/gpt-oss-120b`, `openai/gpt-oss-20b`,
+`qwen/qwen3.6-27b`), the completion budget has to cover hidden reasoning *before*
+any JSON is emitted. The default 4096 is not enough and fails in two ways — one
+loud, one silent:
+
+- Loud: `400 json_validate_failed ... max completion tokens reached before generating a valid document`
+- Silent: a valid script whose scenes stop halfway through the narration. The
+  render still succeeds (`render_service._scale_scene_durations` stretches the
+  surviving scenes over the full audio), so you get a video where the visuals
+  drift out of sync with the voice. `Script._validate_scenes_cover_narration`
+  now catches this and triggers the self-correcting retry.
+
+Working config for `openai/gpt-oss-120b`:
+
+```bash
+GROQ_MODEL=openai/gpt-oss-120b
+GROQ_REASONING_EFFORT=low   # empty for non-reasoning models — Groq 400s otherwise
+GROQ_MAX_TOKENS=6000        # must be <= TPM limit minus prompt tokens
+```
+
+Groq counts `max_completion_tokens` toward the **tokens-per-minute** limit
+(8000 on the free tier), so an over-generous budget trips
+`413 Request too large ... on tokens per minute (TPM)` even when the prompt is
+small. Budget = TPM − prompt tokens (the pt-BR system prompt is ~1300).
+
+These are process-global, so one `.env` drives one language at a time. Running an English and a pt-BR channel simultaneously would require making these per-account (DB column + per-job env), which is not implemented.
 
 ## File Structure
 
@@ -377,6 +430,24 @@ Install via package manager:
 ### Pollinations offline + no Imagen fallback
 - Symptom: `VisualGenerationError ... no fallback available`
 - Fix: Set `GEMINI_API_KEY` in `.env` to enable Imagen fallback
+- **The Imagen fallback does not work on a free-tier Gemini key.** An AI Studio
+  key exposes no model with the `predict` method that `client.models.generate_images`
+  needs, so `_via_imagen` fails with `404 models/imagen-4.0-generate-001 is not
+  found for API version v1beta`. The key only has the `gemini-*-image` models,
+  which use `generateContent` — and their free-tier quota
+  (`generate_content_free_tier_requests`) is exhausted by a couple of requests.
+  Treat Pollinations as the only image source unless you're on a paid tier.
+
+### Pollinations returns HTTP 500 on every retry for one scene
+- Symptom: a specific scene fails identically no matter how often it retries,
+  while other scenes succeed.
+- Cause: Pollinations validates `seed` against a signed 32-bit ceiling
+  (2147483647) but reports violations as a bare 500 — the real message
+  (`{"seed": ["Too big: expected number to be <=2147483647"]}`) is buried in the
+  response body. Because the seed is a pure function of the prompt, a bad one
+  never recovers.
+- Fixed in `visual_service._deterministic_seed` by masking to 31 bits. If you
+  change the seed derivation, keep the mask.
 
 ### Worker not processing jobs
 - Check worker is running: `python -m app.worker --account-id 1` should print `[worker] Starting job processor...`
