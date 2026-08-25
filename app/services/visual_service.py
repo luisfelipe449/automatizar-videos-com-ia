@@ -37,6 +37,9 @@ _JPEG_MAGIC = b"\xff\xd8\xff"
 _MIN_IMAGE_BYTES = 1000
 
 _POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"
+# Pollinations validates `seed` as a signed 32-bit int; above this it answers
+# HTTP 500 with the real cause hidden in the body. See `_deterministic_seed`.
+_POLLINATIONS_MAX_SEED = 2_147_483_647
 # Pollinations enfileira por prompt: prompts pesados (cinematic, 9:16, flux)
 # podem passar de 60s em horários de carga. 180s absorve a variação real
 # observada sem prejudicar falhas legítimas (o serviço costuma responder
@@ -79,9 +82,16 @@ def _moderate(image_prompt: str) -> None:
 
 
 def _deterministic_seed(image_prompt: str) -> int:
-    """First 8 hex chars of sha256(prompt) → int. Keeps Pollinations reproducible."""
+    """First 8 hex chars of sha256(prompt) → int. Keeps Pollinations reproducible.
+
+    Masked to 31 bits: Pollinations rejects any seed above 2147483647, and it
+    reports that as a bare HTTP 500 with the real reason buried in the body.
+    Since the seed is a pure function of the prompt, an out-of-range one failed
+    on every retry too — that scene simply could never be generated. The full
+    8-hex-char value is unsigned 32-bit, so this affected half of all prompts.
+    """
     digest = hashlib.sha256(image_prompt.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16)
+    return int(digest[:8], 16) & _POLLINATIONS_MAX_SEED
 
 
 def _looks_like_image(data: bytes) -> bool:

@@ -329,3 +329,49 @@ def test_generate_all_scene_images_preserves_order(monkeypatch, patched_env):
     ]
     for p in paths:
         assert p.exists()
+
+
+# --------------------------------------------------------------------------- #
+# Seed range
+#
+# Pollinations validates `seed` against a signed 32-bit ceiling and rejects
+# anything above it — the response is an opaque HTTP 500 whose body hides
+# `{"seed": ["Too big: expected number to be <=2147483647"]}`. The seed is
+# derived from the prompt, so an out-of-range one fails identically on every
+# retry: that scene can never be generated. `int(sha256[:8], 16)` spans the
+# full unsigned range, so this hit half of all prompts.
+# --------------------------------------------------------------------------- #
+
+_POLLINATIONS_MAX_SEED = 2_147_483_647
+
+
+def test_deterministic_seed_never_exceeds_pollinations_ceiling():
+    from app.services.visual_service import _deterministic_seed
+
+    # Enough prompts that the old unsigned-32-bit version fails with certainty:
+    # each has a ~50% chance of landing above the ceiling.
+    for i in range(200):
+        seed = _deterministic_seed(f"a cinematic vertical shot, variant {i}")
+        assert 0 <= seed <= _POLLINATIONS_MAX_SEED, f"variant {i} produced {seed}"
+
+
+def test_deterministic_seed_is_still_stable_per_prompt():
+    """Masking must not break reproducibility — same prompt, same image."""
+    from app.services.visual_service import _deterministic_seed
+
+    assert _deterministic_seed("workshop at golden hour") == _deterministic_seed(
+        "workshop at golden hour"
+    )
+    assert _deterministic_seed("prompt A") != _deterministic_seed("prompt B")
+
+
+def test_known_overflowing_prompt_is_brought_into_range():
+    """The exact prompt that failed in production: seed was 2768101696."""
+    from app.services.visual_service import _deterministic_seed
+
+    prompt = (
+        "A frustrated freelancer looking at a laptop screen with an empty "
+        "inbox, construction site background, vertical 9:16, realistic "
+        "cinematic lighting"
+    )
+    assert _deterministic_seed(prompt) <= _POLLINATIONS_MAX_SEED
