@@ -20,6 +20,7 @@ from PIL import Image
 
 from app.models import RenderSpec, Scene
 from app.services import render_service
+from tests.ffmpeg_locator import find_ffmpeg
 from app.services.render_service import (
     RenderError,
     _build_ffmpeg_command,
@@ -706,21 +707,12 @@ def test_render_short_missing_narration_raises(tmp_path: Path):
 # Smoke: real ffmpeg end-to-end
 # --------------------------------------------------------------------------- #
 
-_FFMPEG_PATH_ENV = (
-    "C:/Users/1luis/AppData/Local/Microsoft/WinGet/Packages/"
-    "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/"
-    "ffmpeg-8.1-full_build/bin/ffmpeg.exe"
-)
+_FOUND_FFMPEG = find_ffmpeg()
+_FFMPEG_PATH_ENV = str(_FOUND_FFMPEG) if _FOUND_FFMPEG else ""
 
 
 def _ffmpeg_available() -> bool:
-    if shutil.which("ffmpeg"):
-        return True
-    if os.getenv("FFMPEG_PATH") and Path(os.environ["FFMPEG_PATH"]).exists():
-        return True
-    if Path(_FFMPEG_PATH_ENV).exists():
-        return True
-    return False
+    return bool(_FFMPEG_PATH_ENV)
 
 
 def _wire_ffmpeg(monkeypatch: pytest.MonkeyPatch) -> str:

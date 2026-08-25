@@ -70,8 +70,14 @@ class FakeGroq:
 
 @pytest.fixture
 def patched_env(monkeypatch, tmp_path: Path):
-    """Fake API key + redirected generated/rendered dirs."""
+    """Fake API key + redirected generated/rendered dirs.
+
+    `WHISPER_LANGUAGE` is cleared so the suite reflects the code's default
+    instead of whatever the developer's `.env` happens to set — a pt-BR channel
+    config must not turn these assertions red.
+    """
     monkeypatch.setenv("GROQ_API_KEY", "fake-key")
+    monkeypatch.delenv("WHISPER_LANGUAGE", raising=False)
     generated = tmp_path / "generated"
     rendered = tmp_path / "rendered"
     monkeypatch.setattr("app.utils.filepaths.GENERATED_DIR", generated)
@@ -327,6 +333,25 @@ def test_happy_path_writes_valid_ass(monkeypatch, patched_env, tmp_path):
     assert call_kwargs["response_format"] == "verbose_json"
     assert call_kwargs["timestamp_granularities"] == ["word"]
     assert call_kwargs["language"] == "en"
+
+
+def test_whisper_language_env_var_is_forwarded(monkeypatch, patched_env, tmp_path):
+    """Transcribing pt-BR narration with `language="en"` mangles the accents.
+
+    The env var is the only knob, so it has to reach the Groq call.
+    """
+    monkeypatch.setenv("WHISPER_LANGUAGE", "pt")
+    from app.services.caption_service import transcribe
+
+    wav = _touch_wav(tmp_path / "narration.wav")
+    _install_fake_groq(
+        monkeypatch,
+        [_make_transcription([{"word": "olá", "start": 0.0, "end": 0.5}])],
+    )
+
+    transcribe(wav, job_id="job-lang")
+
+    assert FakeGroq.last_instance.calls[0]["language"] == "pt"
 
 
 def test_empty_transcription_raises_caption_error(monkeypatch, patched_env, tmp_path):

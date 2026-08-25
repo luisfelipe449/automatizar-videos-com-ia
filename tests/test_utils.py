@@ -17,6 +17,7 @@ from app.utils.filepaths import (
     scene_video_path,
 )
 from app.utils.retries import default_retry, is_retryable_http
+from tests.ffmpeg_locator import find_ffmpeg
 
 
 # --------------------------------------------------------------------------- #
@@ -183,11 +184,7 @@ def test_quota_video_is_per_job_and_independent_of_imagen():
 # ffmpeg_helpers (need FFMPEG_PATH; tests use monkeypatch to stay hermetic)
 # --------------------------------------------------------------------------- #
 
-_FFMPEG_WINGET = Path(
-    "C:/Users/1luis/AppData/Local/Microsoft/WinGet/Packages/"
-    "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/"
-    "ffmpeg-8.1-full_build/bin/ffmpeg.exe"
-)
+_FFMPEG_WINGET = find_ffmpeg()
 
 
 def _import_ffmpeg_fresh(monkeypatch, path: str):
@@ -204,8 +201,8 @@ def _import_ffmpeg_fresh(monkeypatch, path: str):
 
 
 def test_ffmpeg_bin_resolves_and_runs(monkeypatch):
-    if not _FFMPEG_WINGET.exists():
-        pytest.skip(f"ffmpeg not found at {_FFMPEG_WINGET}")
+    if _FFMPEG_WINGET is None:
+        pytest.skip("No ffmpeg found (set FFMPEG_PATH or put ffmpeg on PATH)")
     ff = _import_ffmpeg_fresh(monkeypatch, str(_FFMPEG_WINGET))
     binary = ff.ffmpeg_bin()
     result = subprocess.run(
@@ -217,8 +214,8 @@ def test_ffmpeg_bin_resolves_and_runs(monkeypatch):
 
 
 def test_probe_duration_on_generated_silent_wav(monkeypatch, tmp_path: Path):
-    if not _FFMPEG_WINGET.exists():
-        pytest.skip(f"ffmpeg not found at {_FFMPEG_WINGET}")
+    if _FFMPEG_WINGET is None:
+        pytest.skip("No ffmpeg found (set FFMPEG_PATH or put ffmpeg on PATH)")
     ff = _import_ffmpeg_fresh(monkeypatch, str(_FFMPEG_WINGET))
 
     wav = tmp_path / "silent.wav"
