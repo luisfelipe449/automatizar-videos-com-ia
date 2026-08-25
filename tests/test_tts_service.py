@@ -318,3 +318,97 @@ def test_narration_exactly_at_budget_is_accepted(monkeypatch, patched_env):
     _install_fake_client(monkeypatch, [_ONE_SECOND_SILENCE_PCM])
 
     assert synthesize_narration("cabe justo", job_id="job-exact").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Tests: quota exhaustion is terminal, not transient
+#
+# Gemini reports a spent quota as 429 RESOURCE_EXHAUSTED, which looks exactly
+# like rate limiting to `is_retryable_http` — but a daily quota only comes back
+# at the provider's reset, so retrying just burns backoff before failing anyway.
+# --------------------------------------------------------------------------- #
+
+_QUOTA_ERROR_MESSAGE = (
+    "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': "
+    "'You exceeded your current quota', 'status': 'RESOURCE_EXHAUSTED', "
+    "'details': [{'quotaMetric': 'generate_content_free_tier_requests'}]}}"
+)
+
+
+def test_quota_error_raises_typed_exception(monkeypatch, patched_env):
+    """Callers must be able to tell "come back tomorrow" from "TTS is broken"."""
+    from app.services.tts_service import (
+        TTSError,
+        TTSQuotaExceeded,
+        synthesize_narration,
+    )
+
+    _patch_no_backoff(monkeypatch)
+    _install_fake_client(monkeypatch, [RuntimeError(_QUOTA_ERROR_MESSAGE)])
+
+    with pytest.raises(TTSQuotaExceeded) as excinfo:
+        synthesize_narration("olá", job_id="job-quota")
+
+    # Stays a TTSError so existing except-clauses keep working.
+    assert isinstance(excinfo.value, TTSError)
+
+
+def test_quota_error_is_not_retried(monkeypatch, patched_env):
+    """One attempt, not three: the quota will not reset inside a backoff window."""
+    from app.services.tts_service import TTSQuotaExceeded, synthesize_narration
+
+    _patch_no_backoff(monkeypatch)
+    _install_fake_client(
+        monkeypatch,
+        [RuntimeError(_QUOTA_ERROR_MESSAGE)] * 3,
+    )
+
+    with pytest.raises(TTSQuotaExceeded):
+        synthesize_narration("olá", job_id="job-quota-once")
+
+    assert len(FakeClient.calls) == 1
+
+
+def test_quota_failure_leaves_no_artifact_so_rerun_retries(monkeypatch, patched_env):
+    """Re-running the same job_id after the reset must re-attempt this stage."""
+    from app.services.tts_service import TTSQuotaExceeded, synthesize_narration
+    from app.utils import filepaths
+
+    _patch_no_backoff(monkeypatch)
+    _install_fake_client(monkeypatch, [RuntimeError(_QUOTA_ERROR_MESSAGE)])
+
+    with pytest.raises(TTSQuotaExceeded):
+        synthesize_narration("olá", job_id="job-quota-rerun")
+
+    assert not filepaths.narration_path("job-quota-rerun").exists()
+    assert not filepaths.narration_hash_path("job-quota-rerun").exists()
+
+
+def test_transient_server_error_is_still_retried(monkeypatch, patched_env):
+    """The fast-fail must be narrow: a 503 is genuinely worth another attempt."""
+    from app.services.tts_service import synthesize_narration
+
+    _patch_no_backoff(monkeypatch)
+    _stub_probe_duration(monkeypatch)
+    _install_fake_client(
+        monkeypatch,
+        [RuntimeError("503 UNAVAILABLE: backend overloaded"), _ONE_SECOND_SILENCE_PCM],
+    )
+
+    assert synthesize_narration("olá", job_id="job-transient").exists()
+    assert len(FakeClient.calls) == 2
+
+
+def test_rate_limit_without_quota_marker_is_retried(monkeypatch, patched_env):
+    """A per-minute 429 with no quota metric is transient — keep retrying it."""
+    from app.services.tts_service import synthesize_narration
+
+    _patch_no_backoff(monkeypatch)
+    _stub_probe_duration(monkeypatch)
+    _install_fake_client(
+        monkeypatch,
+        [RuntimeError("429 Too Many Requests: slow down"), _ONE_SECOND_SILENCE_PCM],
+    )
+
+    assert synthesize_narration("olá", job_id="job-rate-limit").exists()
+    assert len(FakeClient.calls) == 2

@@ -35,25 +35,63 @@ class TTSError(RuntimeError):
     """Raised when Gemini TTS returns an unusable response or the WAV is invalid."""
 
 
+class TTSQuotaExceeded(TTSError):
+    """Raised when the Gemini TTS quota is spent.
+
+    Gemini is the only narration provider, so this stops the job — but nothing
+    is lost: `script.json` was already written and hashed, so re-running the
+    same `job_id` after the quota resets cache-hits the script stage and
+    resumes here.
+
+    `retryable = False` keeps `default_retry` from spending its three attempts:
+    the message carries a 429, which the retry predicate would otherwise read
+    as rate limiting, and a daily quota does not come back inside a backoff.
+    """
+
+    retryable = False
+
+
+# Substrings that separate a spent quota from ordinary per-minute throttling.
+# Both arrive as 429, so the status code alone can't decide: Gemini attaches
+# RESOURCE_EXHAUSTED plus a `quotaMetric` when the allowance itself is gone.
+_QUOTA_MARKERS = ("resource_exhausted", "quota")
+
+
+def _is_quota_error(exc: BaseException) -> bool:
+    """True when `exc` reports a spent allowance rather than transient throttling."""
+    message = str(exc).lower()
+    return any(marker in message for marker in _QUOTA_MARKERS)
+
+
 @default_retry
 def _call_gemini_tts(client: genai.Client, narration: str, voice_name: str) -> bytes:
     """Invoke Gemini TTS and return the raw PCM bytes.
 
     Wrapped in `default_retry` so transient HTTP/5xx errors get backoff.
-    Deterministic errors (e.g. 400 bad request) propagate as-is.
+    Deterministic errors (e.g. 400 bad request) propagate as-is, and a spent
+    quota is converted to `TTSQuotaExceeded` so it fails on the first attempt.
     """
-    response = client.models.generate_content(
-        model=GEMINI_TTS_MODEL,
-        contents=narration,
-        config=types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name),
-                )
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_TTS_MODEL,
+            contents=narration,
+            config=types.GenerateContentConfig(
+                response_modalities=["AUDIO"],
+                speech_config=types.SpeechConfig(
+                    voice_config=types.VoiceConfig(
+                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_name),
+                    )
+                ),
             ),
-        ),
-    )
+        )
+    except Exception as exc:  # noqa: BLE001 — reclassify, then re-raise as-is
+        if _is_quota_error(exc):
+            raise TTSQuotaExceeded(
+                f"Gemini TTS quota exhausted: {exc}. The script for this job is "
+                f"already cached — re-run the same job_id after the quota resets "
+                f"and the pipeline resumes from the tts stage."
+            ) from exc
+        raise
     try:
         pcm_bytes = response.candidates[0].content.parts[0].inline_data.data
     except (AttributeError, IndexError, TypeError) as exc:

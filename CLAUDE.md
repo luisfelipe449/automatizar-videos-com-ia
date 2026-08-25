@@ -427,6 +427,22 @@ Install via package manager:
 - Symptom: `401 UNAUTHENTICATED` or `invalid_grant`
 - Fix: Re-run `scripts/bootstrap_youtube_oauth.py` and update `.env` or account in dashboard
 
+### Gemini TTS quota exhausted (`TTSQuotaExceeded`)
+- Symptom: the job fails at the `tts` stage with `Gemini TTS quota exhausted: ...`
+  and stops after a single attempt.
+- Cause: Gemini is the only narration provider — there is no TTS fallback. A spent
+  daily allowance arrives as a 429 `RESOURCE_EXHAUSTED` with a `quotaMetric`, which
+  `tts_service._is_quota_error` distinguishes from ordinary per-minute throttling.
+  `TTSQuotaExceeded.retryable = False` makes `is_retryable_http` skip the retries:
+  the generic predicate matches `"429"` by substring, and a daily quota does not
+  come back inside a 1-8s backoff.
+- Fix: re-run the **same** `job_id` after the quota resets. Nothing is lost —
+  `script.json` and its `.hash` were written before this stage, so the script
+  cache-hits and the pipeline resumes at `tts`. In dashboard mode use "retry" on
+  the failed job (same `job_id`, same cache).
+- Transient 429s without a quota marker are still retried normally; regression
+  tests in `tests/test_tts_service.py` pin both halves of that split.
+
 ### Pollinations offline + no Imagen fallback
 - Symptom: `VisualGenerationError ... no fallback available`
 - Fix: Set `GEMINI_API_KEY` in `.env` to enable Imagen fallback
