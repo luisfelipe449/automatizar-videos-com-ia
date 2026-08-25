@@ -15,7 +15,13 @@
       "Bash(git diff *)",
       "Bash(python -m pytest tests/test_script_service.py::test_video_title_forwarded_to_user_message tests/test_script_service.py::test_video_title_defaults_to_prompt -v)",
       "Bash(python -m pytest tests/test_script_service.py -v)",
-      "Bash(git commit -m 'feat\\(script\\): add video_title kwarg to generate_script *)"
+      "Bash(git commit -m 'feat\\(script\\): add video_title kwarg to generate_script *)",
+      "Bash(rtk ls *)",
+      "Bash(rtk read *)",
+      "Bash(rtk grep *)",
+      "Bash(python -c ' *)",
+      "Bash(python -m venv .venv)",
+      "Bash(echo \"EXIT=$?\")"
     ]
   }
 }
