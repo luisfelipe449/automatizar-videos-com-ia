@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from tests.ffmpeg_locator import find_ffmpeg
+
 
 # --------------------------------------------------------------------------- #
 # Constants / fake payloads
@@ -16,11 +18,8 @@ import pytest
 # 1 second of silence at 24 kHz, 16-bit mono = 24000 frames × 2 bytes.
 _ONE_SECOND_SILENCE_PCM = b"\x00\x00" * 24_000
 
-_REAL_FFMPEG = (
-    "C:/Users/1luis/AppData/Local/Microsoft/WinGet/Packages/"
-    "Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/"
-    "ffmpeg-8.1-full_build/bin/ffmpeg.exe"
-)
+_FOUND_FFMPEG = find_ffmpeg()
+_REAL_FFMPEG = str(_FOUND_FFMPEG) if _FOUND_FFMPEG else ""
 
 
 # --------------------------------------------------------------------------- #
@@ -112,8 +111,22 @@ def _patch_no_backoff(monkeypatch):
 
 
 def _require_real_ffmpeg():
-    if not Path(_REAL_FFMPEG).exists():
-        pytest.skip(f"Real ffmpeg not available at {_REAL_FFMPEG}")
+    if not _REAL_FFMPEG:
+        pytest.skip("No ffmpeg found (set FFMPEG_PATH or put ffmpeg on PATH)")
+
+
+def _stub_probe_duration(monkeypatch, seconds: float = 1.0):
+    """Bypass the real ffprobe call so tests about API arguments need no binary."""
+    monkeypatch.setattr(
+        "app.services.tts_service.ffmpeg_helpers.probe_duration",
+        lambda _path: seconds,
+    )
+
+
+def _voice_sent_to_api() -> str:
+    """Dig the voice name out of the config object handed to the Gemini SDK."""
+    config = FakeClient.last_instance.calls[0]["config"]
+    return config.speech_config.voice_config.prebuilt_voice_config.voice_name
 
 
 # --------------------------------------------------------------------------- #
@@ -222,3 +235,86 @@ def test_empty_payload_raises_tts_error(monkeypatch, patched_env):
 
     with pytest.raises(TTSError, match="empty audio payload"):
         synthesize_narration("qualquer", job_id="job-empty")
+
+
+# --------------------------------------------------------------------------- #
+# Voice selection
+# --------------------------------------------------------------------------- #
+
+def test_voice_defaults_to_configured_tts_voice(monkeypatch, patched_env):
+    """The voice comes from config (TTS_VOICE env), not a hard-coded default.
+
+    Switching the narration language means switching the voice; that has to be
+    reachable without editing code.
+    """
+    monkeypatch.setattr("app.services.tts_service.TTS_VOICE", "Charon")
+    _stub_probe_duration(monkeypatch)
+    from app.services.tts_service import synthesize_narration
+
+    _install_fake_client(monkeypatch, [_ONE_SECOND_SILENCE_PCM])
+
+    synthesize_narration("olá mundo", job_id="job-voice-config")
+
+    assert _voice_sent_to_api() == "Charon"
+
+
+def test_explicit_voice_name_overrides_configured_default(monkeypatch, patched_env):
+    monkeypatch.setattr("app.services.tts_service.TTS_VOICE", "Charon")
+    _stub_probe_duration(monkeypatch)
+    from app.services.tts_service import synthesize_narration
+
+    _install_fake_client(monkeypatch, [_ONE_SECOND_SILENCE_PCM])
+
+    synthesize_narration("olá mundo", job_id="job-voice-arg", voice_name="Kore")
+
+    assert _voice_sent_to_api() == "Kore"
+
+
+# --------------------------------------------------------------------------- #
+# Narration length guard
+#
+# The Script contract caps the sum of *scene* durations, but the finished video
+# is as long as the narration audio: render_service rescales the scenes to fit
+# it. So an over-long narration only surfaced at the very end, as
+# "output duration 61.20s exceeds 60s" — after ~8 minutes of image generation
+# and a full render. pt-BR narrates at ~140 wpm, well under the English
+# assumption baked into the word-count targets, so this fires in practice.
+# Catching it here costs seconds instead of minutes.
+# --------------------------------------------------------------------------- #
+
+def test_narration_longer_than_budget_raises(monkeypatch, patched_env):
+    from app.config import MAX_DURATION_SECONDS
+    from app.services.tts_service import TTSError, synthesize_narration
+
+    _stub_probe_duration(monkeypatch, MAX_DURATION_SECONDS + 3.2)
+    _install_fake_client(monkeypatch, [_ONE_SECOND_SILENCE_PCM])
+
+    with pytest.raises(TTSError, match="too long"):
+        synthesize_narration("narração muito longa", job_id="job-too-long")
+
+
+def test_over_long_narration_leaves_no_cached_artifact(monkeypatch, patched_env):
+    """A cached WAV would make the next run cache-hit straight past the guard."""
+    from app.config import MAX_DURATION_SECONDS
+    from app.services.tts_service import TTSError, synthesize_narration
+    from app.utils import filepaths
+
+    _stub_probe_duration(monkeypatch, MAX_DURATION_SECONDS + 3.2)
+    _install_fake_client(monkeypatch, [_ONE_SECOND_SILENCE_PCM])
+
+    with pytest.raises(TTSError):
+        synthesize_narration("narração muito longa", job_id="job-too-long-2")
+
+    assert not filepaths.narration_path("job-too-long-2").exists()
+    assert not filepaths.narration_hash_path("job-too-long-2").exists()
+
+
+def test_narration_exactly_at_budget_is_accepted(monkeypatch, patched_env):
+    """The limit is inclusive — don't reject a script that just fits."""
+    from app.config import MAX_DURATION_SECONDS
+    from app.services.tts_service import synthesize_narration
+
+    _stub_probe_duration(monkeypatch, float(MAX_DURATION_SECONDS))
+    _install_fake_client(monkeypatch, [_ONE_SECOND_SILENCE_PCM])
+
+    assert synthesize_narration("cabe justo", job_id="job-exact").exists()

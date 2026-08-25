@@ -14,7 +14,12 @@ from pathlib import Path
 from google import genai
 from google.genai import types
 
-from app.config import GEMINI_TTS_MODEL, require
+from app.config import (
+    GEMINI_TTS_MODEL,
+    MAX_DURATION_SECONDS,
+    TTS_VOICE,
+    require,
+)
 from app.utils import cache, ffmpeg_helpers, filepaths
 from app.utils.retries import default_retry
 
@@ -70,10 +75,17 @@ def _write_wav(pcm_bytes: bytes, out_path: Path) -> None:
 
 
 def _validate_wav(wav_path: Path) -> None:
-    """Belt-and-suspenders check: ffprobe must report duration > 0.
+    """Check ffprobe reports a duration that is positive and within budget.
 
-    Deletes the wav and raises `TTSError` if the probe fails or reports 0s —
-    Gemini could theoretically return silence-only or corrupted bytes.
+    Deletes the wav and raises `TTSError` if the probe fails, reports 0s, or
+    reports more than `MAX_DURATION_SECONDS`.
+
+    The upper bound matters because the narration audio, not the script's scene
+    durations, decides how long the finished video is — `render_service` scales
+    the scenes to fit the audio. Without this check an over-long narration only
+    surfaced as "output duration 61.20s exceeds 60s" after the clips and render
+    stages had already run, which is minutes of wasted work per job. The WAV is
+    deleted (and no hash written) so a re-run doesn't cache-hit past the guard.
     """
     try:
         duration = ffmpeg_helpers.probe_duration(wav_path)
@@ -83,10 +95,23 @@ def _validate_wav(wav_path: Path) -> None:
     if duration <= 0:
         wav_path.unlink(missing_ok=True)
         raise TTSError(f"Generated WAV has non-positive duration: {duration}s")
+    if duration > MAX_DURATION_SECONDS:
+        wav_path.unlink(missing_ok=True)
+        raise TTSError(
+            f"Narration is too long: {duration:.2f}s of audio exceeds the "
+            f"{MAX_DURATION_SECONDS}s budget for a Short. Shorten the narration "
+            f"word count in the script prompt — the video length follows the "
+            f"audio, not the scene durations."
+        )
 
 
-def synthesize_narration(narration: str, job_id: str, *, voice_name: str = "Kore") -> Path:
+def synthesize_narration(
+    narration: str, job_id: str, *, voice_name: str | None = None
+) -> Path:
     """Generate narration.wav via Gemini TTS.
+
+    `voice_name` defaults to `config.TTS_VOICE` (env `TTS_VOICE`); pass it
+    explicitly only to override the configured voice for one call.
 
     Returns the absolute path to the WAV. If an existing WAV's hash matches
     `hash_text(narration)`, returns the existing path without re-calling the API.
@@ -102,7 +127,7 @@ def synthesize_narration(narration: str, job_id: str, *, voice_name: str = "Kore
         return wav_path
 
     client = genai.Client(api_key=require("GEMINI_API_KEY"))
-    pcm_bytes = _call_gemini_tts(client, narration, voice_name)
+    pcm_bytes = _call_gemini_tts(client, narration, voice_name or TTS_VOICE)
 
     _write_wav(pcm_bytes, wav_path)
     _validate_wav(wav_path)
