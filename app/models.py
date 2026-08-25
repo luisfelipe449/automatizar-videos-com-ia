@@ -2,11 +2,47 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.config import MAX_DURATION_SECONDS, TARGET_HEIGHT, TARGET_WIDTH
+
+# --- narration coverage (see Script._validate_scenes_cover_narration) ------- #
+
+# Below this many narration words, coverage is noise rather than signal.
+# Real scripts run 80-150 words; only synthetic fixtures land under this.
+_COVERAGE_MIN_WORDS = 30
+# 0.8 tolerates rewording and dropped filler but catches a whole missing half.
+_COVERAGE_MIN_RATIO = 0.8
+# Unicode-aware so Portuguese accents count as word characters.
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _significant_words(text: str) -> list[str]:
+    """Lowercased word tokens, punctuation stripped, for coverage comparison."""
+    return _WORD_RE.findall(text.lower())
+
+
+# --- unicode punctuation normalization -------------------------------------- #
+
+# Characters LLMs emit that the caption font (Bebas Neue) has no glyph for, so
+# they'd burn into the video as empty boxes. En/em dashes are deliberately NOT
+# here — the font has those and they're stylistically fine.
+_PUNCT_FIXES = {
+    "‑": "-",  # non-breaking hyphen — gpt-oss uses it in "Lembre‑se"
+    "‐": "-",  # plain unicode hyphen
+    " ": " ",  # non-breaking space
+    " ": " ",  # narrow no-break space
+    " ": " ",  # thin space
+}
+_PUNCT_TABLE = str.maketrans(_PUNCT_FIXES)
+
+
+def _normalize_punctuation(text: str) -> str:
+    """Replace unrenderable unicode punctuation with ASCII equivalents."""
+    return text.translate(_PUNCT_TABLE)
 
 
 class Scene(BaseModel):
@@ -28,6 +64,11 @@ class Scene(BaseModel):
     rank: int | None = Field(default=None, ge=1, le=100)
     rank_title: str | None = Field(default=None, min_length=1, max_length=40)
 
+    @field_validator("scene_text", "rank_title", mode="before")
+    @classmethod
+    def _normalize_text(cls, value):
+        return _normalize_punctuation(value) if isinstance(value, str) else value
+
     @model_validator(mode="after")
     def _validate_rank_pair(self) -> "Scene":
         if (self.rank is None) != (self.rank_title is None):
@@ -47,6 +88,11 @@ class Script(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=15)
     narration: str = Field(min_length=1)
     scenes: list[Scene] = Field(min_length=1)
+
+    @field_validator("title", "description", "narration", mode="before")
+    @classmethod
+    def _normalize_text(cls, value):
+        return _normalize_punctuation(value) if isinstance(value, str) else value
 
     @field_validator("tags")
     @classmethod
@@ -80,6 +126,41 @@ class Script(BaseModel):
                 f"got {actual}, expected {expected}"
             )
         return scenes
+
+    @model_validator(mode="after")
+    def _validate_scenes_cover_narration(self) -> "Script":
+        """Reject scripts whose scenes only cover part of the narration.
+
+        `scene_text` is contractually the line of narration a scene covers, so
+        the scenes together should span the whole thing. Models sometimes stop
+        emitting scenes halfway through — the render still succeeds (durations
+        are rescaled to the real audio length) but the surviving images get
+        stretched over the uncovered half, so the visuals drift out of sync
+        with the voice. `generate_script` feeds ValidationErrors back to the
+        model, so failing here buys a self-correcting retry.
+
+        Word-set based rather than exact-match: models reword and drop filler
+        constantly, and only wholesale-missing narration is worth failing on.
+        """
+        narration_words = _significant_words(self.narration)
+        # Coverage is meaningless for a handful of words (and test fixtures
+        # legitimately use throwaway narration), so only police real scripts.
+        if len(narration_words) < _COVERAGE_MIN_WORDS:
+            return self
+
+        covered = set().union(
+            *(_significant_words(s.scene_text) for s in self.scenes)
+        )
+        hits = sum(1 for w in narration_words if w in covered)
+        ratio = hits / len(narration_words)
+        if ratio < _COVERAGE_MIN_RATIO:
+            raise ValueError(
+                f"Scenes cover only {ratio:.0%} of the narration "
+                f"(minimum {_COVERAGE_MIN_RATIO:.0%}). Every part of the "
+                f"narration needs a scene: split the remaining narration into "
+                f"more scenes so the visuals track the whole voiceover."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_total_duration(self) -> "Script":

@@ -211,3 +211,113 @@ def test_scene_rank_title_too_long():
             rank=1,
             rank_title="x" * 41,
         )
+
+
+# --------------------------------------------------------------------------- #
+# Narration coverage
+#
+# `scene_text` is contractually "the exact line of narration this scene
+# covers" (both system prompts say so). Nothing used to check it, so a script
+# whose scenes covered only the first half of the narration passed validation
+# — the renderer then stretched those few images over the whole audio and the
+# visuals desynced from the voice. These tests pin that down.
+# --------------------------------------------------------------------------- #
+
+_NARRATION_SENTENCES = [
+    "Você enviou o orçamento e o cliente nunca mais respondeu.",
+    "Vou te mostrar os três erros que causam isso.",
+    "Erro um: não detalhar o escopo do serviço.",
+    "O cliente fica inseguro porque não sabe o que está incluído.",
+    "Erro dois: preço sem nenhuma justificativa clara.",
+    "Divida o valor em mão de obra, material e taxa.",
+    "Erro três: falta de prazo de validade na proposta.",
+    "Defina validade de sete a dez dias e destaque no topo.",
+    "Use um modelo de proposta profissional para elevar sua credibilidade.",
+    "Segue o canal para mais dicas e compartilha se ajudou.",
+]
+
+
+def _covered_script_kwargs(scene_sentences: list[str], **overrides):
+    """Script kwargs whose narration is the full text and scenes cover `scene_sentences`."""
+    return _valid_script_kwargs(
+        narration=" ".join(_NARRATION_SENTENCES),
+        scenes=[
+            {
+                "id": i,
+                "scene_text": sentence,
+                "image_prompt": f"prompt {i}",
+                "duration_seconds": 5,
+            }
+            for i, sentence in enumerate(scene_sentences, start=1)
+        ],
+        **overrides,
+    )
+
+
+def test_scenes_covering_whole_narration_pass():
+    script = Script(**_covered_script_kwargs(_NARRATION_SENTENCES))
+    assert len(script.scenes) == 10
+
+
+def test_scenes_covering_only_first_half_of_narration_rejected():
+    """The real gpt-oss-120b failure: 6 scenes for a 10-beat narration."""
+    with pytest.raises(ValidationError, match="narration"):
+        Script(**_covered_script_kwargs(_NARRATION_SENTENCES[:5]))
+
+
+def test_paraphrased_scene_text_still_passes():
+    """Coverage is word-based, not exact-match — light rewording must not fail.
+
+    Models reorder and drop filler words constantly; only wholesale missing
+    narration should trip the check.
+    """
+    reworded = [s.replace("Erro", "Problema").rstrip(".") for s in _NARRATION_SENTENCES]
+    script = Script(**_covered_script_kwargs(reworded))
+    assert len(script.scenes) == 10
+
+
+def test_short_synthetic_narration_skips_coverage_check():
+    """A handful of words has no meaningful "coverage" — don't police fixtures."""
+    script = Script(**_valid_script_kwargs())
+    assert script.narration == "Texto da narração."
+
+
+# --------------------------------------------------------------------------- #
+# Unicode punctuation normalization
+#
+# gpt-oss-120b emits U+2011 NON-BREAKING HYPHEN in pt-BR enclitics
+# ("Lembre‑se", "evitá‑los"). Bebas Neue has no glyph for U+2011 or U+2010 —
+# only U+002D — so any that reaches the burned captions renders as an empty
+# box. Normalize at the contract boundary, where the LLM introduces it.
+# --------------------------------------------------------------------------- #
+
+def test_non_breaking_hyphen_normalized_to_ascii():
+    script = Script(
+        **_valid_script_kwargs(
+            title="Lembre\u2011se disso",
+            narration="Como evit\u00e1\u2011los e corrigi\u2011los.",
+            scenes=[
+                {
+                    "id": 1,
+                    "scene_text": "Lembre\u2011se",
+                    "image_prompt": "p",
+                    "duration_seconds": 4,
+                }
+            ],
+        )
+    )
+    assert "\u2011" not in script.title
+    assert "\u2011" not in script.narration
+    assert "\u2011" not in script.scenes[0].scene_text
+    assert script.title == "Lembre-se disso"
+
+
+def test_non_breaking_space_normalized_to_plain_space():
+    script = Script(**_valid_script_kwargs(narration="dois\u00a0mil reais"))
+    assert script.narration == "dois mil reais"
+
+
+def test_en_and_em_dash_are_left_alone():
+    """Bebas Neue does have these glyphs, and they're stylistically intended."""
+    script = Script(**_valid_script_kwargs(title="Pre\u00e7o \u2014 valor \u2013 lucro"))
+    assert script.title == "Pre\u00e7o \u2014 valor \u2013 lucro"
