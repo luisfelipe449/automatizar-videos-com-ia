@@ -48,6 +48,9 @@ assets/input/*
 # ... except the bundled CC0 music library — those ship with the repo.
 !assets/input/music/
 !assets/input/music/*.mp3
+# ... and the versioned prompt templates referenced by SCRIPT_PROMPT_FILE /
+# ANGLES_PROMPT_FILE — those are source, not scratch.
+!assets/input/prompt-*.md
 
 # -----------------------------------------------------------------------------
 # Database
