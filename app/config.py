@@ -72,12 +72,24 @@ USE_VIDEO_HOOK: bool = os.getenv("USE_VIDEO_HOOK", "false").strip().lower() in (
 # Model names (overridable via env).
 # -----------------------------------------------------------------------------
 GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+# Completion budget for script generation. Reasoning models (openai/gpt-oss-*)
+# spend this on hidden reasoning before emitting any JSON, so they need far more
+# headroom than a plain instruct model. Note Groq counts this value toward the
+# per-minute token limit, so raising it can trip a 413 on the free tier.
+GROQ_MAX_TOKENS: int = int(os.getenv("GROQ_MAX_TOKENS", "4096"))
+# "low" | "medium" | "high" for reasoning models; empty means don't send the
+# parameter at all — Groq returns 400 for models that don't support it.
+GROQ_REASONING_EFFORT: str = os.getenv("GROQ_REASONING_EFFORT", "").strip()
 # Bedrock uses inference profile IDs; us-east-1 requires the "us." prefix.
 BEDROCK_MODEL: str = os.getenv(
     "BEDROCK_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
 )
 AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
 GEMINI_TTS_MODEL: str = os.getenv("GEMINI_TTS_MODEL", "gemini-2.5-flash-preview-tts")
+# Gemini prebuilt voice used for narration. The voices are multilingual, but
+# they don't all sound equally natural per language — switching narration
+# language usually means auditioning a different voice.
+TTS_VOICE: str = os.getenv("TTS_VOICE", "Kore")
 GEMINI_IMAGE_MODEL: str = os.getenv("GEMINI_IMAGE_MODEL", "imagen-4.0-generate-001")
 
 # -----------------------------------------------------------------------------

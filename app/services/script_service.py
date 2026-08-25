@@ -12,23 +12,33 @@ corrective system message before giving up.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from groq import Groq
 from pydantic import ValidationError
 
 from app import config
-from app.config import BEDROCK_MODEL, GROQ_MODEL, require
+from app.config import (
+    BEDROCK_MODEL,
+    GROQ_MAX_TOKENS,
+    GROQ_MODEL,
+    GROQ_REASONING_EFFORT,
+    require,
+)
 from app.models import Script
 from app.utils import filepaths
 from app.utils.retries import default_retry
 
 _LOG_PREFIX = "[script_service]"
 
-# Optional system-prompt override file. When SCRIPT_PROMPT_FILE points to an
-# existing file, its contents replace `_SYSTEM_PROMPT` for the run. Useful for
-# one-off experiments (e.g. a non-English pilot) without editing code.
+# Optional system-prompt override files. When either env var points to an
+# existing file, its contents replace the built-in prompt for the run. Useful
+# for running a whole channel in another language/genre without editing code.
+# Both are needed together: overriding only the scriptwriter leaves the angle
+# titles in the built-in prompt's language.
 _OVERRIDE_ENV = "SCRIPT_PROMPT_FILE"
+_ANGLES_OVERRIDE_ENV = "ANGLES_PROMPT_FILE"
 
 # Single-pass prompt: LLM returns the full script AND one visual prompt per fact.
 # Style: "viral facts" English Shorts — fast, hooky, CTA-peppered, cinematic visuals.
@@ -97,8 +107,10 @@ class AnglesGenerationError(RuntimeError):
     """Meta-LLM failed to propose N viable viral angles for a theme."""
 
 
-# Shared budget for all providers. 9-13 scenes × (scene_text + cinematic
-# image_prompt) + narration + tags/title/description fits comfortably in 4096.
+# Bedrock budget. 9-13 scenes × (scene_text + cinematic image_prompt) +
+# narration + tags/title/description fits comfortably in 4096. Groq reads its
+# budget from `config.GROQ_MAX_TOKENS` instead, because reasoning models need
+# room for their hidden reasoning on top of the JSON.
 _MAX_TOKENS = 4096
 _TEMPERATURE = 0.9  # bumped from 0.7 — "more creative scripts" was the trigger.
 
@@ -164,6 +176,30 @@ Hard rules:
 """
 
 
+def _resolve_system_prompt(env_var: str, default: str) -> tuple[str, str]:
+    """Return `(system_prompt, source_label)`, honouring an optional override file.
+
+    A path that is set but doesn't exist is ignored rather than fatal: a typo
+    in `.env` should degrade to the built-in prompt, not kill the run.
+    """
+    override_path = os.getenv(env_var, "").strip()
+    if override_path and Path(override_path).is_file():
+        text = Path(override_path).read_text(encoding="utf-8")
+        return text, f"OVERRIDE({override_path})"
+    return default, "builtin"
+
+
+def _reasoning_kwargs() -> dict:
+    """`{"reasoning_effort": ...}` when configured, else empty.
+
+    Groq rejects the parameter outright (400) on models that don't reason, so
+    it can never be sent unconditionally.
+    """
+    if GROQ_REASONING_EFFORT:
+        return {"reasoning_effort": GROQ_REASONING_EFFORT}
+    return {}
+
+
 @default_retry
 def _call_groq_angles(client, messages: list[dict]) -> str:
     """Groq call tuned for the angle-generation meta-prompt (shorter, hotter)."""
@@ -172,7 +208,14 @@ def _call_groq_angles(client, messages: list[dict]) -> str:
         response_format={"type": "json_object"},
         messages=messages,
         temperature=_ANGLES_TEMPERATURE,
-        max_tokens=_ANGLES_MAX_TOKENS,
+        # A reasoning model burns the budget before writing any JSON, so the
+        # angles list needs the full script budget when one is in play.
+        max_completion_tokens=(
+            max(_ANGLES_MAX_TOKENS, GROQ_MAX_TOKENS)
+            if GROQ_REASONING_EFFORT
+            else _ANGLES_MAX_TOKENS
+        ),
+        **_reasoning_kwargs(),
     )
     return response.choices[0].message.content or ""
 
@@ -259,10 +302,16 @@ def generate_angles(theme: str, n: int = 5) -> list[dict[str, str]]:
         raise ValueError("theme must be non-empty")
 
     provider, client = _build_client()
-    print(f"{_LOG_PREFIX} angles provider={provider} theme={theme!r} n={n}")
+    system_prompt, prompt_source = _resolve_system_prompt(
+        _ANGLES_OVERRIDE_ENV, _ANGLES_SYSTEM_PROMPT
+    )
+    print(
+        f"{_LOG_PREFIX} angles provider={provider} theme={theme!r} n={n} "
+        f"prompt={prompt_source}"
+    )
 
     base_messages: list[dict] = [
-        {"role": "system", "content": _ANGLES_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": f"Theme: {theme}\nN: {n}"},
     ]
 
@@ -306,7 +355,8 @@ def _call_groq(client, messages: list[dict]) -> str:
         response_format={"type": "json_object"},
         messages=messages,
         temperature=_TEMPERATURE,
-        max_tokens=_MAX_TOKENS,
+        max_completion_tokens=GROQ_MAX_TOKENS,
+        **_reasoning_kwargs(),
     )
     return response.choices[0].message.content or ""
 
@@ -421,21 +471,12 @@ def generate_script(
     If `job_id` is None, derives one via `filepaths.make_job_id(prompt)`.
     Raises `ScriptGenerationError` on unrecoverable failure.
     """
-    import os as _os
     resolved_job_id = job_id or filepaths.make_job_id(prompt)
     resolved_title = video_title if (video_title and video_title.strip()) else prompt
     provider, client = _build_client()
 
-    # Optional override: if SCRIPT_PROMPT_FILE is set and exists, load its
-    # text as the system prompt (lets one-off runs use a completely different
-    # genre/language without editing the module).
-    override_path = _os.getenv(_OVERRIDE_ENV, "").strip()
-    if override_path and Path(override_path).is_file():
-        system_prompt = Path(override_path).read_text(encoding="utf-8")
-        print(f"{_LOG_PREFIX} provider={provider} prompt=OVERRIDE({override_path})")
-    else:
-        system_prompt = _SYSTEM_PROMPT
-        print(f"{_LOG_PREFIX} provider={provider}")
+    system_prompt, prompt_source = _resolve_system_prompt(_OVERRIDE_ENV, _SYSTEM_PROMPT)
+    print(f"{_LOG_PREFIX} provider={provider} prompt={prompt_source}")
 
     user_content = (
         f"Topic for the Short: {prompt}\n"

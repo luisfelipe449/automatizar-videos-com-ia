@@ -320,3 +320,103 @@ def test_generate_angles_rejects_empty_theme():
 
     with pytest.raises(ValueError, match="non-empty"):
         generate_angles("   ", n=5)
+
+
+def test_angles_prompt_file_overrides_system_prompt(monkeypatch, patched_env, tmp_path):
+    """ANGLES_PROMPT_FILE swaps the meta-prompt, mirroring SCRIPT_PROMPT_FILE.
+
+    Without this, a non-English channel gets English titles even when the
+    scriptwriter prompt is overridden.
+    """
+    from app.services.script_service import generate_angles
+
+    override = tmp_path / "angles-pt.md"
+    override.write_text("Você propõe ângulos virais em português.", encoding="utf-8")
+    monkeypatch.setenv("ANGLES_PROMPT_FILE", str(override))
+    _install_fake_groq(monkeypatch, [_angles_payload(3)])
+
+    generate_angles("orçamento de serviço", n=3)
+
+    messages = FakeGroq.last_instance.calls[0]["messages"]
+    system_msg = next(m for m in messages if m["role"] == "system")
+    assert system_msg["content"] == "Você propõe ângulos virais em português."
+
+
+def test_angles_prompt_file_pointing_nowhere_falls_back_to_default(
+    monkeypatch, patched_env, tmp_path
+):
+    """A stale/typo'd path must not crash the run — the built-in prompt wins.
+
+    Guards the `.is_file()` check: reading the path unconditionally would
+    raise FileNotFoundError here.
+    """
+    from app.services.script_service import _ANGLES_SYSTEM_PROMPT, generate_angles
+
+    monkeypatch.setenv("ANGLES_PROMPT_FILE", str(tmp_path / "does-not-exist.md"))
+    _install_fake_groq(monkeypatch, [_angles_payload(3)])
+
+    generate_angles("tema qualquer", n=3)
+
+    messages = FakeGroq.last_instance.calls[0]["messages"]
+    system_msg = next(m for m in messages if m["role"] == "system")
+    assert system_msg["content"] == _ANGLES_SYSTEM_PROMPT
+
+
+# --------------------------------------------------------------------------- #
+# Token budget / reasoning effort
+#
+# Reasoning models (Groq's openai/gpt-oss-*) spend the completion budget on
+# hidden reasoning before emitting a token of JSON. With the old fixed 4096 and
+# default effort, generation died with "max completion tokens reached before
+# generating a valid document" — or, worse, silently returned a script whose
+# scenes stopped halfway through the narration. Both knobs must be reachable
+# from config, and `reasoning_effort` must NOT be sent unless configured: Groq
+# rejects it with a 400 on models that don't support it.
+# --------------------------------------------------------------------------- #
+
+def test_uses_max_completion_tokens_from_config(monkeypatch, patched_env):
+    """`max_tokens` is the legacy field and excludes reasoning on gpt-oss."""
+    monkeypatch.setattr("app.services.script_service.GROQ_MAX_TOKENS", 6000)
+    from app.services.script_service import generate_script
+
+    _install_fake_groq(monkeypatch, [json.dumps(_VALID_PAYLOAD)])
+    generate_script("tema", job_id="job-budget")
+
+    kwargs = FakeGroq.last_instance.calls[0]
+    assert kwargs["max_completion_tokens"] == 6000
+    assert "max_tokens" not in kwargs
+
+
+def test_reasoning_effort_omitted_when_unset(monkeypatch, patched_env):
+    """Sending it to a non-reasoning model is a hard 400 — omit by default."""
+    monkeypatch.setattr("app.services.script_service.GROQ_REASONING_EFFORT", "")
+    from app.services.script_service import generate_script
+
+    _install_fake_groq(monkeypatch, [json.dumps(_VALID_PAYLOAD)])
+    generate_script("tema", job_id="job-noeffort")
+
+    assert "reasoning_effort" not in FakeGroq.last_instance.calls[0]
+
+
+def test_reasoning_effort_forwarded_when_configured(monkeypatch, patched_env):
+    monkeypatch.setattr("app.services.script_service.GROQ_REASONING_EFFORT", "low")
+    from app.services.script_service import generate_script
+
+    _install_fake_groq(monkeypatch, [json.dumps(_VALID_PAYLOAD)])
+    generate_script("tema", job_id="job-effort")
+
+    assert FakeGroq.last_instance.calls[0]["reasoning_effort"] == "low"
+
+
+def test_angles_call_also_honours_reasoning_effort(monkeypatch, patched_env):
+    """The angles meta-prompt runs on the same model, so it starves the same way."""
+    monkeypatch.setattr("app.services.script_service.GROQ_REASONING_EFFORT", "low")
+    from app.services.script_service import generate_angles
+
+    payload = {"angles": [{"title": f"t{i}", "prompt": f"p{i}"} for i in range(5)]}
+    _install_fake_groq(monkeypatch, [json.dumps(payload)])
+    generate_angles("tema qualquer", n=5)
+
+    kwargs = FakeGroq.last_instance.calls[0]
+    assert kwargs["reasoning_effort"] == "low"
+    assert "max_completion_tokens" in kwargs
