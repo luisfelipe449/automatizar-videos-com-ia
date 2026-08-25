@@ -232,6 +232,98 @@ def test_privacy_override_wins_over_config(monkeypatch, patched_env, video_file)
     assert videos.insert_kwargs["body"]["status"]["privacyStatus"] == "unlisted"
 
 
+# --------------------------------------------------------------------------- #
+# Tests: video language tagging
+#
+# YouTube feeds `defaultLanguage` / `defaultAudioLanguage` to auto-captions and
+# recommendations, so a pt-BR Short tagged "en" gets the wrong treatment. These
+# read `config` at call time (like privacy), so patching the attribute is enough.
+# --------------------------------------------------------------------------- #
+
+def _upload_with_language(monkeypatch, video_file, language: str, job_id: str) -> dict:
+    """Upload once with `config.YOUTUBE_VIDEO_LANGUAGE` forced. Returns the snippet."""
+    from app import config
+    from app.services import youtube_service
+
+    monkeypatch.setattr(config, "YOUTUBE_VIDEO_LANGUAGE", language)
+    videos, _, _ = _install_fake_build(monkeypatch, queue=[(None, {"id": "vid_lang"})])
+    youtube_service.upload_short(video_file, _make_script(job_id))
+    return videos.insert_kwargs["body"]["snippet"]
+
+
+def test_video_language_is_tagged_from_config(monkeypatch, patched_env, video_file):
+    snippet = _upload_with_language(monkeypatch, video_file, "pt-BR", "job-lang-pt")
+    assert snippet["defaultLanguage"] == "pt-BR"
+    assert snippet["defaultAudioLanguage"] == "pt-BR"
+
+
+def test_video_language_english_still_supported(monkeypatch, patched_env, video_file):
+    snippet = _upload_with_language(monkeypatch, video_file, "en", "job-lang-en")
+    assert snippet["defaultLanguage"] == "en"
+    assert snippet["defaultAudioLanguage"] == "en"
+
+
+def _reloaded_config_language(monkeypatch, **env) -> str:
+    """Re-import `app.config` under `env` and return the resolved video language.
+
+    The constant is computed at import time, so the resolution order (explicit
+    var → narration language → "en") can only be exercised by a reload. The
+    module object is mutated in place, so callers holding `from app import
+    config` see the new value; the fixture restores it afterwards.
+
+    `load_dotenv` is stubbed out because the reload would otherwise re-inject
+    the developer's own `.env` over the cleared variables — a pt-BR channel
+    config must not decide what these assertions see.
+    """
+    import importlib
+
+    from app import config
+
+    monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
+    for key in ("YOUTUBE_VIDEO_LANGUAGE", "WHISPER_LANGUAGE"):
+        monkeypatch.delenv(key, raising=False)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    importlib.reload(config)
+    return config.YOUTUBE_VIDEO_LANGUAGE
+
+
+@pytest.fixture(autouse=True)
+def _restore_config():
+    """Undo any `importlib.reload(config)` so later tests see the real env."""
+    yield
+    import importlib
+
+    from app import config
+
+    importlib.reload(config)
+
+
+def test_video_language_defaults_to_english(monkeypatch):
+    assert _reloaded_config_language(monkeypatch) == "en"
+
+
+def test_video_language_follows_whisper_language(monkeypatch):
+    """One knob per channel: setting the narration language is enough."""
+    assert _reloaded_config_language(monkeypatch, WHISPER_LANGUAGE="pt") == "pt"
+
+
+def test_explicit_video_language_overrides_whisper(monkeypatch):
+    """`pt-BR` is a better YouTube tag than the ISO-639-1 `pt` Whisper wants."""
+    resolved = _reloaded_config_language(
+        monkeypatch, WHISPER_LANGUAGE="pt", YOUTUBE_VIDEO_LANGUAGE="pt-BR"
+    )
+    assert resolved == "pt-BR"
+
+
+def test_blank_video_language_falls_back(monkeypatch):
+    """An empty var in `.env` must not tag the video with an empty language."""
+    resolved = _reloaded_config_language(
+        monkeypatch, YOUTUBE_VIDEO_LANGUAGE="   ", WHISPER_LANGUAGE="pt"
+    )
+    assert resolved == "pt"
+
+
 def test_invalid_privacy_raises(monkeypatch, patched_env, video_file):
     from app.services import youtube_service
     from app.services.youtube_service import YouTubeUploadError

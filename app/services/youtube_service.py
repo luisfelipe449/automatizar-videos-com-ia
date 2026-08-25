@@ -217,13 +217,15 @@ def upload_short(
             "description": _ensure_shorts_hashtag(script.description),
             "tags": list(script.tags),
             "categoryId": category if category is not None else _CATEGORY_ENTERTAINMENT,
-            # Mark the video's metadata + audio track as English (BCP-47).
-            # Matches the script_service system prompt (English-only output)
-            # and caption_service Whisper (language="en"). YouTube uses
-            # these for auto-captions, recommendations, and the "Video
-            # language" field in the details panel.
-            "defaultLanguage": "en",
-            "defaultAudioLanguage": "en",
+            # Mark the video's metadata + audio track language (BCP-47). Must
+            # track the narration language, not the code's original default —
+            # YouTube uses these for auto-captions, recommendations, and the
+            # "Video language" field, so a pt-BR Short tagged "en" is served to
+            # the wrong audience. Resolved from YOUTUBE_VIDEO_LANGUAGE, falling
+            # back to WHISPER_LANGUAGE. Read at call time so tests (and the
+            # per-account env the worker injects) can override it.
+            "defaultLanguage": config.YOUTUBE_VIDEO_LANGUAGE,
+            "defaultAudioLanguage": config.YOUTUBE_VIDEO_LANGUAGE,
         },
         "status": {
             "privacyStatus": privacy,

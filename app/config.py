@@ -101,6 +101,19 @@ FFMPEG_PATH: str = os.getenv("FFMPEG_PATH", "")
 # One of: private | unlisted | public. Default = private (MVP safe).
 YOUTUBE_PRIVACY_STATUS: str = os.getenv("YOUTUBE_PRIVACY_STATUS", "private")
 
+# BCP-47 tag written to the video's `defaultLanguage` / `defaultAudioLanguage`.
+# YouTube feeds these to auto-captions and recommendations, so a pt-BR Short
+# tagged "en" gets matched to the wrong audience. Falls back to the narration
+# language already configured for Whisper captions, so switching a channel's
+# language needs one variable, not two. BCP-47 accepts a region subtag that
+# ISO-639-1 doesn't, hence the explicit override: WHISPER_LANGUAGE must stay
+# `pt` while this can be the more precise `pt-BR`.
+YOUTUBE_VIDEO_LANGUAGE: str = (
+    os.getenv("YOUTUBE_VIDEO_LANGUAGE", "").strip()
+    or os.getenv("WHISPER_LANGUAGE", "").strip()
+    or "en"
+)
+
 # -----------------------------------------------------------------------------
 # Pipeline constants.
 # -----------------------------------------------------------------------------
