@@ -117,7 +117,10 @@ YOUTUBE_VIDEO_LANGUAGE: str = (
 # -----------------------------------------------------------------------------
 # Clips mode (app/clips). Twitch credentials are read lazily via `require`.
 # -----------------------------------------------------------------------------
-CLIPS_DIR: Path = ASSETS_DIR / "clips"
+# Downloaded clips, outros and rendered editions: several GB a day, so it can
+# live on another drive. A path for the Python that runs the app (on this
+# setup Windows Python, so "F:/five-star-clips").
+CLIPS_DIR: Path = Path(os.getenv("CLIPS_DIR", "").strip() or ASSETS_DIR / "clips")
 CLIPS_GAME_NAME: str = os.getenv("CLIPS_GAME_NAME", "Grand Theft Auto VI").strip()
 # Clips under this view count are dropped before download/classification —
 # the classifier is the only per-clip cost, so this is the budget knob.

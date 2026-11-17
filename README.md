@@ -149,6 +149,7 @@ No `.env` (detalhes em `.env.example`):
 |---|---|
 | `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | App da Twitch (dev.twitch.tv/console), token de app |
 | `CLIPS_GAME_NAME` | Jogo coletado (`Grand Theft Auto VI`; `Grand Theft Auto V` para testes) |
+| `CLIPS_DIR` | Onde ficam clips, outros e edições (vários GB por dia). Vazio = `assets/clips`; ex.: `F:/five-star-clips` |
 | `CLIPS_MIN_VIEWS`, `CLIPS_MAX_CANDIDATES` | Pré-filtro de views e teto de clips por coleta: é o controle de custo da classificação |
 | `CLIPS_CLASSIFIER_MODELS` | Modelos Gemini que assistem cada clip, em ordem |
 | `GEMINI_API_KEY` | Classificação e TTS do CTA. **Com billing ativo, cada clip classificado é cobrado** |
@@ -212,7 +213,7 @@ Aprovar/Rejeitar. A decisão é final: aprovar avança a numeração.
 ### Artefatos
 
 ```
-assets/clips/
+<CLIPS_DIR>/                            # padrão: assets/clips/
   raw/<fonte>_<id>.mp4 (+ .proxy.mp4)   # clip baixado e proxy 480p do classificador
   outro/                                # outros por canal e aspecto, CTA em cache
   editions/<data>_<formato>/
