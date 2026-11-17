@@ -11,7 +11,14 @@ import pytest
 from app.clips import __main__ as cli
 from app.clips.formats import FORMATS, SHORT_MAX_S
 from app.clips.models import CandidateClip
-from app.clips.pipeline import SHORT_SAFETY_S, Deps, edition_key, run_daily, window_end
+from app.clips.pipeline import (
+    DRY_RUN_OUTRO_ESTIMATE_S,
+    SHORT_SAFETY_S,
+    Deps,
+    edition_key,
+    run_daily,
+    window_end,
+)
 from app.clips.profiles import load_profile
 from app.clips.render import BaseRender, LanguageRender
 from app.db.database import Base, get_engine, get_session
@@ -83,6 +90,8 @@ class Harness:
         self.classifier = FakeClassifier()
         self.base_calls = []
         self.lang_calls = []
+        self.outro_calls = []
+        self.on_disk: set[str] = set()  # profile keys with a 9:16 outro already rendered
         self.fail_format: str | None = None
 
     def download(self, session, clips):
@@ -95,10 +104,16 @@ class Harness:
         return list(clips)
 
     def outro(self, profile, aspect):
+        self.outro_calls.append((profile.key, aspect))
         path = self.tmp / "outro" / f"{profile.key}_{aspect}.mp4"
         path.parent.mkdir(exist_ok=True)
         path.write_bytes(b"o")
         return path
+
+    def outro_on_disk(self, profile, aspect):
+        if profile.key not in self.on_disk:
+            return None
+        return self.tmp / "outro" / f"{profile.key}_{aspect}.mp4"
 
     def probe(self, path):
         key, aspect = Path(path).stem.rsplit("_", 1)
@@ -129,7 +144,8 @@ class Harness:
     def deps(self) -> Deps:
         return Deps(
             source=lambda: self.source, download=self.download, classifier=lambda: self.classifier,
-            outro=self.outro, render_base=self.render_base, render_language=self.render_language,
+            outro=self.outro, outro_on_disk=self.outro_on_disk,
+            render_base=self.render_base, render_language=self.render_language,
             probe=self.probe, now=lambda: END + timedelta(hours=1),
         )
 
@@ -195,6 +211,7 @@ def test_short_budget_comes_from_the_longest_9x16_outro(session, tmp_path):
     report = Harness(tmp_path).run(session)
     assert report.short_budget_s == pytest.approx(
         SHORT_MAX_S - SHORT_SAFETY_S - max(OUTRO_9X16_S.values()))
+    assert report.short_budget_source == "rendered 9:16 outros"
 
 
 def test_short_trim_leaves_room_for_encoder_rounding(session, tmp_path):
@@ -234,6 +251,50 @@ def test_dry_run_plans_without_persisting_or_rendering(session, tmp_path):
     assert all(r.plan is not None for r in report.editions)
     assert session.query(Edition).count() == 0
     assert h.base_calls == [] and h.lang_calls == []
+
+
+def test_dry_run_never_renders_an_outro(session, tmp_path):
+    # A fresh install has no 9:16 outro: rendering one would pay for TTS.
+    h = Harness(tmp_path)
+    report = h.run(session, dry_run=True)
+    assert h.outro_calls == []
+    assert report.short_budget_s == pytest.approx(
+        SHORT_MAX_S - SHORT_SAFETY_S - DRY_RUN_OUTRO_ESTIMATE_S)
+    assert "estimate" in report.short_budget_source
+    assert EN.key in report.short_budget_source and BR.key in report.short_budget_source
+
+
+def test_dry_run_budget_uses_outros_already_on_disk(session, tmp_path):
+    h = Harness(tmp_path)
+    h.on_disk = {EN.key, BR.key}
+    report = h.run(session, dry_run=True)
+    assert h.outro_calls == []
+    assert report.short_budget_s == pytest.approx(
+        SHORT_MAX_S - SHORT_SAFETY_S - max(OUTRO_9X16_S.values()))
+    assert "on disk" in report.short_budget_source
+
+
+def test_dry_run_estimates_only_the_missing_outros(session, tmp_path):
+    h = Harness(tmp_path)
+    h.on_disk = {EN.key}
+    report = h.run(session, dry_run=True)
+    assert "estimate" in report.short_budget_source
+    assert BR.key in report.short_budget_source and f"{EN.key}," not in report.short_budget_source
+
+
+def test_no_budget_when_no_short_edition_needs_planning(session, tmp_path):
+    Harness(tmp_path).run(session)  # both editions planned and stored
+    h = Harness(tmp_path)
+    report = h.run(session, dry_run=True)
+    assert h.outro_calls == []
+    assert report.short_budget_s is None
+    assert [r.outcome for r in report.editions] == ["planned", "planned"]
+
+
+def test_budget_skipped_for_formats_without_a_short(session, tmp_path):
+    h = Harness(tmp_path)
+    report = h.run(session, dry_run=True, specs=[FORMATS["top10_weekly"]])
+    assert h.outro_calls == [] and report.short_budget_s is None
 
 
 def test_skip_harvest_plans_from_stored_clips(session, tmp_path):
@@ -434,3 +495,4 @@ def test_report_lists_the_selection(session, tmp_path):
     text = cli.format_report(report, names)
     assert "top_daily: planned" in text
     assert "#1  clip" in text and "streamer0" in text and "[Short" in text
+    assert "Short clip budget" in text and "estimate" in text

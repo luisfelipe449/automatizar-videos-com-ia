@@ -178,7 +178,9 @@ WSL só chegam a ele listadas em `WSLENV`.
 # Lote do dia (formatos do calendário; data padrão = hoje em Brasília)
 .venv/Scripts/python.exe -m app.clips daily
 
-# Dry run: coleta, baixa e classifica, planeja e imprime a seleção, sem render
+# Dry run: coleta, baixa e classifica, planeja e imprime a seleção, sem render.
+# Nem o outro é renderizado: o espaço do Short usa o outro 9:16 já em disco ou
+# uma estimativa, e o relatório diz qual.
 .venv/Scripts/python.exe -m app.clips daily --date 2026-11-18 --dry-run \
   --format top_daily --format funny_daily
 

@@ -7,7 +7,9 @@
 `--format` forces formats regardless of the calendar, e.g. for a dry run
 before launch day, when no format is due yet. `--dry-run` stops after
 planning and prints the selection; harvest, download and classification
-still run and are stored. Classification calls Gemini, which is billed;
+still run and are stored. A dry run renders nothing, outros included: the
+Short budget comes from 9:16 outros already on disk, else an estimate, and
+the report says which. Classification calls Gemini, which is billed;
 `--skip-classify` plans from views alone (Funny then finds no candidates).
 
 The database schema is upgraded in place (`app.db.migrations`) before the
@@ -52,7 +54,7 @@ def format_report(report: DailyReport, clip_names: dict[int, str]) -> str:
     if report.classified:
         lines.append(f"  classified: {report.classified}")
     if report.short_budget_s is not None:
-        lines.append(f"  Short clip budget: {report.short_budget_s:.1f} s")
+        lines.append(f"  Short clip budget: {report.short_budget_s:.1f} s ({report.short_budget_source})")
     for result in report.editions:
         head = f"  {result.format_key}: {result.outcome}"
         lines.append(f"{head} ({result.detail})" if result.detail else head)

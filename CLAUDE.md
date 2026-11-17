@@ -348,7 +348,10 @@ Scheduled by WSL cron (`*/30`) through `scripts/run_clips_daily.sh`; see
   `pipeline.SHORT_SAFETY_S` (encoder rounding); the Short's clip loses its
   start, never its end. `render_base` keeps the planned length (reported
   duration − trim) and seeks to `probed − kept`, because the file can run a
-  few hundredths longer than Twitch reports.
+  few hundredths longer than Twitch reports. The budget is computed only when
+  a format with a Short needs a fresh plan; a dry run never renders an outro
+  (TTS is billed) and uses the 9:16 outro on disk or
+  `pipeline.DRY_RUN_OUTRO_ESTIMATE_S`, reported in `short_budget_source`.
 - Medium chapters follow YouTube's rules (`metadata.build_chapters`): first
   at 0:00, at least 3, each at least 10 s, or none are shown.
 

@@ -205,6 +205,11 @@ def _file_fingerprint(path: Path) -> str:
     return f"{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
 
 
+def outro_path(profile_key: str, aspect: Aspect, *, work_dir: Path = CLIPS_DIR / "outro") -> Path:
+    """Where `render_outro` writes the outro of this channel and aspect."""
+    return work_dir / f"outro_{profile_key}_{aspect}.mp4"
+
+
 def render_outro(
     profile: ChannelProfile,
     aspect: Aspect,
@@ -226,7 +231,7 @@ def render_outro(
     cta_file = work_dir / f"cta_{profile.key}_{aspect}.txt"
     cta_text = "\n".join(wrap_cta(profile.outro_cta, width))
 
-    dst = work_dir / f"outro_{profile.key}_{aspect}.mp4"
+    dst = outro_path(profile.key, aspect, work_dir=work_dir)
     hash_path = dst.with_suffix(".hash")
     fingerprint = json.dumps({
         "v": _GRAPH_VERSION,

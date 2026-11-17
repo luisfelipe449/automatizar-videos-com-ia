@@ -45,6 +45,11 @@ EDITIONS_DIR = CLIPS_DIR / "editions"
 # hundredths over their nominal length, and `render_language` refuses a Short
 # that crosses `SHORT_MAX_S` by any amount.
 SHORT_SAFETY_S = 0.5
+# A dry run never renders an outro (on a fresh install that is a billed TTS
+# call). A channel whose 9:16 outro is not on disk yet is assumed to need
+# this long; real ones run 0.8 s + the CTA narration + 0.6 s, at least 5 s,
+# and a CTA sentence narrates in about 3-6 s.
+DRY_RUN_OUTRO_ESTIMATE_S = 10.0
 
 
 def _default_source():
@@ -71,6 +76,13 @@ def _default_outro(profile: ChannelProfile, aspect: str) -> Path:
     return render_outro(profile, aspect)
 
 
+def _default_outro_on_disk(profile: ChannelProfile, aspect: str) -> Path | None:
+    from app.clips.outro import outro_path
+
+    path = outro_path(profile.key, aspect)
+    return path if path.is_file() else None
+
+
 @dataclass
 class Deps:
     """Everything that touches the network, the disk or FFmpeg."""
@@ -79,6 +91,8 @@ class Deps:
     download: Callable[[Session, list[Clip]], list[Clip]] = _default_download
     classifier: Callable[[], object] = _default_classifier
     outro: Callable[[ChannelProfile, str], Path] = _default_outro
+    # The outro a previous run left on disk, or None; never renders.
+    outro_on_disk: Callable[[ChannelProfile, str], Path | None] = _default_outro_on_disk
     render_base: Callable[..., clip_render.BaseRender] = clip_render.render_base
     render_language: Callable[..., clip_render.LanguageRender] = clip_render.render_language
     probe: Callable[[Path], float] = probe_duration
@@ -100,7 +114,8 @@ class DailyReport:
     harvested: tuple[int, int] | None = None  # (inserted, updated)
     downloaded: int = 0
     classified: dict[str, int] = field(default_factory=dict)
-    short_budget_s: float | None = None
+    short_budget_s: float | None = None  # None: no Short edition needed planning
+    short_budget_source: str | None = None  # how the 9:16 outro length was obtained
     editions: list[EditionResult] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
@@ -225,6 +240,37 @@ def _render_edition(
     session.commit()
 
 
+def _short_budget(
+    profiles: Sequence[ChannelProfile], *, dry_run: bool, deps: Deps,
+) -> tuple[float, str]:
+    """Room for the Short's clip and where the outro length came from.
+
+    `SHORT_MAX_S` minus the longest 9:16 outro and `SHORT_SAFETY_S`. A real
+    run renders (or reuses) every outro. A dry run only probes outros already
+    on disk and uses `DRY_RUN_OUTRO_ESTIMATE_S` for the rest.
+    """
+    if not profiles:
+        return SHORT_MAX_S - SHORT_SAFETY_S, "no channel profile"
+    if not dry_run:
+        longest = max(deps.probe(deps.outro(p, "9x16")) for p in profiles)
+        return SHORT_MAX_S - SHORT_SAFETY_S - longest, "rendered 9:16 outros"
+    lengths: list[float] = []
+    estimated: list[str] = []
+    for profile in profiles:
+        path = deps.outro_on_disk(profile, "9x16")
+        if path is None:
+            estimated.append(profile.key)
+            lengths.append(DRY_RUN_OUTRO_ESTIMATE_S)
+        else:
+            lengths.append(deps.probe(path))
+    if estimated:
+        source = (f"dry run, {DRY_RUN_OUTRO_ESTIMATE_S:.0f} s estimate for the 9:16 outro "
+                  f"not rendered yet: {', '.join(estimated)}")
+    else:
+        source = "dry run, 9:16 outros on disk"
+    return SHORT_MAX_S - SHORT_SAFETY_S - max(lengths), source
+
+
 def _group_by_window(specs: Sequence[FormatSpec]) -> dict[timedelta, list[FormatSpec]]:
     groups: dict[timedelta, list[FormatSpec]] = {}
     for spec in specs:
@@ -275,12 +321,12 @@ def run_daily(
             report.errors.append(f"classify: {exc.__class__.__name__}: {exc}")
             print(f"{_LOG_PREFIX} classification failed: {exc}")
 
-    # The Short's clip gets what the longest 9:16 outro leaves under the cap,
-    # less a safety margin for encoder rounding.
-    budget = SHORT_MAX_S
-    if any(spec.has_short for spec in specs) and profiles:
-        budget = SHORT_MAX_S - SHORT_SAFETY_S - max(deps.probe(deps.outro(p, "9x16")) for p in profiles)
-    report.short_budget_s = budget
+    def short_budget() -> float:
+        # Only a fresh plan with a Short needs it; computed at most once.
+        if report.short_budget_s is None:
+            report.short_budget_s, report.short_budget_source = _short_budget(
+                profiles, dry_run=dry_run, deps=deps)
+        return report.short_budget_s
 
     ready_ids = {clip.id for clip in ready}
     to_render: list[tuple[Edition, EditionPlan]] = []
@@ -303,6 +349,8 @@ def run_daily(
                 to_render.append((existing, plan))
 
         pool = [c for c in _clips_in_window(session, end, window) if c.id in ready_ids and c.id not in taken]
+        # plan_day reads the budget only for formats with a Short.
+        budget = short_budget() if any(spec.has_short for spec in fresh) else SHORT_MAX_S
         for result in plan_day(pool, fresh, short_budget_s=budget):
             if isinstance(result, SkippedEdition):
                 print(f"{_LOG_PREFIX} {result.format_key}: no edition, {result.reason}")
