@@ -123,17 +123,23 @@ def rank_funny(
 def pack_medium(ranked: Sequence[C], spec: FormatSpec) -> list[C] | None:
     """Best-ranked clips that make a medium of `spec`, in rank order.
 
-    Greedy: walks the ranking and stops as soon as both `min_clips` and
-    `min_s` are met. A clip that would push the total past `max_s` is skipped
-    and the next one tried, so one long clip cannot sink the edition. Clips
-    are never cut in the medium. None when the pool cannot reach the minimums.
+    Walks the ranking and stops as soon as both `min_clips` and `min_s` are
+    met. A clip is skipped (and the next one tried) when taking it would leave
+    no room under `max_s` for the clips still needed to reach `min_clips`,
+    counted at the shortest durations still ahead in the ranking. So long
+    top clips are taken while they fit, and never at the cost of the edition.
+    Clips are never cut in the medium. None when the pool cannot reach the
+    minimums.
     """
     picked: list[C] = []
     total = 0.0
-    for clip in ranked:
+    for i, clip in enumerate(ranked):
         if len(picked) >= spec.max_clips:
             break
-        if total + clip.duration_s > spec.max_s:
+        still_needed = max(0, spec.min_clips - len(picked) - 1)
+        ahead = sorted(c.duration_s for c in ranked[i + 1:])[:still_needed]
+        reserve = sum(ahead) if len(ahead) == still_needed else 0.0
+        if total + clip.duration_s + reserve > spec.max_s:
             continue
         picked.append(clip)
         total += clip.duration_s

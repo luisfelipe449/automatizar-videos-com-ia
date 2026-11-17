@@ -365,3 +365,21 @@ def test_plan_day_prefers_en_and_pt_clips():
     top, = plan_day(spanish + english, [TOP], short_budget_s=BUDGET,
                     preferred=PREFERRED, other_factor=0.5)
     assert {i.clip_id for i in top.items} == {c.id for c in english}
+
+
+def test_pack_medium_leaves_room_for_the_minimum_clip_count():
+    # Best-ranked clips are long: taking them all reaches 300 s with only 6
+    # clips and nothing left fits. The packer must keep room for 8.
+    long = [FakeClip(id=i, view_count=1000 - i, duration_s=50.0) for i in range(1, 7)]
+    short = [FakeClip(id=100 + i, view_count=500 - i, duration_s=10.0) for i in range(10)]
+    packed = pack_medium(long + short, TOP)
+    assert packed is not None
+    assert len(packed) >= TOP.min_clips
+    assert TOP.min_s <= sum(c.duration_s for c in packed) <= TOP.max_s
+    # Still rank-first: as many of the long, best clips as the room allows.
+    assert [c.id for c in packed][:5] == [1, 2, 3, 4, 5]
+
+
+def test_pack_medium_lookahead_keeps_rank_order_when_room_is_ample():
+    packed = pack_medium(_clips(15), TOP)
+    assert [c.id for c in packed] == list(range(1, 9))
