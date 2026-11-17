@@ -649,6 +649,48 @@ class TestEditions:
         (editions_dir / "2026-11-19_top_daily" / "five-star-clips" / "short.mp4").unlink()
         assert client.get(f"/editions/{edition_id}/download/five-star-clips/short").status_code == 404
 
+    @pytest.fixture
+    def channels_dir(self, tmp_path, monkeypatch):
+        """A copy of the real channel profiles that a test may edit or break."""
+        import shutil
+
+        from app.clips import profiles
+
+        target = tmp_path / "channels"
+        shutil.copytree(profiles.CHANNELS_DIR, target)
+        monkeypatch.setattr("app.clips.profiles.CHANNELS_DIR", target)
+        return target
+
+    def test_profiles_are_read_once_until_a_channel_file_changes(
+        self, editions_client, channels_dir, monkeypatch,
+    ):
+        import os
+
+        from app.web.routes import editions
+
+        calls = []
+        real = editions.load_all_profiles
+        monkeypatch.setattr(editions, "load_all_profiles",
+                            lambda **kw: calls.append(kw) or real(**kw))
+        client, edition_id, _, _ = editions_client
+        for _ in range(2):
+            assert client.get(f"/editions/{edition_id}").status_code == 200
+            assert client.get(f"/editions/{edition_id}/media/five-star-clips/thumb").status_code == 200
+        assert len(calls) == 1
+
+        profile = channels_dir / "five-star-clips.json"
+        stat = profile.stat()
+        os.utime(profile, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        assert client.get(f"/editions/{edition_id}").status_code == 200
+        assert len(calls) == 2
+
+    def test_broken_profile_does_not_break_media(self, editions_client, channels_dir):
+        (channels_dir / "zz-broken.json").write_text("{not json", encoding="utf-8")
+        client, edition_id, _, _ = editions_client
+        resp = client.get(f"/editions/{edition_id}/media/five-star-clips/thumb")
+        assert resp.status_code == 200
+        assert client.get(f"/editions/{edition_id}/download/zz-broken/short").status_code == 404
+
     def test_nav_links_to_clips(self, editions_client):
         client, _, _, _ = editions_client
         assert 'href="/editions"' in client.get("/editions").text
