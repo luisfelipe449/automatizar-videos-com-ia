@@ -68,13 +68,19 @@ def ffprobe_bin() -> str:
     return _resolve("ffprobe")
 
 
-def run_ffmpeg(args: list[str], *, timeout: int = 600) -> None:
-    """Run `ffmpeg <args>`; raise FFmpegError with stderr tail on failure."""
+def run_ffmpeg_capture(args: list[str], *, timeout: int = 600) -> str:
+    """Run `ffmpeg <args>` and return its stdout (e.g. a filter printing to `file=-`)."""
     cmd = [ffmpeg_bin(), *args]
     result = subprocess.run(cmd, timeout=timeout, **_RUN_KW)
     if result.returncode != 0:
         tail = os.linesep.join((result.stderr or "").splitlines()[-_STDERR_TAIL_LINES:])
         raise FFmpegError(cmd, result.returncode, tail)
+    return result.stdout or ""
+
+
+def run_ffmpeg(args: list[str], *, timeout: int = 600) -> None:
+    """Run `ffmpeg <args>`; raise FFmpegError with stderr tail on failure."""
+    run_ffmpeg_capture(args, timeout=timeout)
 
 
 def _run_probe(cmd: list[str]) -> str:

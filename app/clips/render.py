@@ -8,6 +8,15 @@ Per edition directory (`assets/clips/editions/<edition_key>/`):
 - `base_9x16.mp4`: the Short's clip over a blurred copy of itself, its start
   cut by the plan's `trim_start_s`. No title; the language pass adds it.
 - `base.json`: where each clip starts in `base_16x9.mp4` (chapters).
+- `peak.png`: the #1 clip's frame at its loudest moment, for thumbnails.
+
+Language pass, per channel into `<edition_dir>/<lang>/`:
+- `medio.mp4`: 1.5 s title card + `base_16x9.mp4` + the 16:9 outro. Chapter
+  times are the `base.json` offsets plus `TITLE_CARD_S`.
+- `short.mp4`: the title over the top band of `base_9x16.mp4` + the 9:16
+  outro, refused when it would pass `SHORT_MAX_S`.
+- `thumb.jpg`: 1280x720 with the title. JPEG because YouTube rejects a
+  thumbnail over 2 MB, which a PNG of game footage easily is.
 
 Each output is cached by a hash of its inputs, so renaming one streamer
 re-renders one segment and the concat, nothing else.
@@ -19,19 +28,22 @@ ran longer than its video would push every later clip's sound out of sync.
 from __future__ import annotations
 
 import json
+import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Protocol, Sequence
 
 from app.clips import fonts
 from app.clips.outro import _escape_path, _file_fingerprint
+from app.clips.formats import SHORT_MAX_S
 from app.clips.select import EditionPlan
 from app.config import ASSETS_DIR
 from app.services.render_service import _escape_drawtext
 from app.utils import cache
-from app.utils.ffmpeg_helpers import probe_duration, run_ffmpeg
+from app.utils.ffmpeg_helpers import probe_duration, run_ffmpeg, run_ffmpeg_capture
 
 XFADE_S = 0.3
+TITLE_CARD_S = 1.5
 _FPS = 30
 _SAMPLE_RATE = 48000
 # YouTube plays back at -14 LUFS; normalising each clip there keeps a quiet
@@ -64,6 +76,22 @@ _ENCODE = [
     "-c:a", "aac", "-b:a", "192k", "-ar", str(_SAMPLE_RATE),
     "-movflags", "+faststart",
 ]
+# Published files: what YouTube receives.
+_FINAL_ENCODE = [
+    "-r", str(_FPS),
+    "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-pix_fmt", "yuv420p",
+    "-c:a", "aac", "-b:a", "160k", "-ar", str(_SAMPLE_RATE),
+    "-movflags", "+faststart",
+]
+_CARD_COLOR = "0x0b1030"
+# Title text: (wrap width in chars, font size).
+_TITLE_16X9 = (26, 120)
+_TITLE_9X16 = (16, 104)
+_TITLE_THUMB = (18, 110)
+# Height of the blurred band above the centred clip in a 9:16 Short.
+_SHORT_TOP_BAND = 656
+# Loudness is measured in windows of this length to find the thumbnail frame.
+_RMS_WINDOW_S = 0.5
 # Bump when a filter graph changes so cached outputs re-render.
 _GRAPH_VERSION = "1"
 
@@ -93,6 +121,14 @@ class BaseRender:
     base_9x16: Path | None
     offsets: tuple[float, ...]  # start of each clip in base_16x9, playback order
     duration_s: float
+    peak_frame: Path
+
+
+@dataclass(frozen=True)
+class LanguageRender:
+    medium: Path
+    short: Path | None
+    thumbnail: Path
 
 
 def credit_for(
@@ -276,8 +312,10 @@ def render_base(
     probe: Callable[[Path], float] = probe_duration,
     icons_dir: Path = _ICONS_DIR,
     font_for: Callable[[str], Path] = fonts.credit_font,
+    measure: Callable[[Path], float | None] | None = None,
 ) -> BaseRender:
     """Render (or reuse) the language-neutral base videos of one edition."""
+    measure = measure or loudest_moment
     items = sorted(plan.items, key=lambda item: item.position)
     sources: dict[int, Path] = {}
     for item in items:
@@ -333,9 +371,190 @@ def render_base(
             run,
         )
 
+    top = next(item for item in items if item.rank == 1)
+    top_src = sources[top.clip_id]
+    peak = edition_dir / "peak.png"
+
+    def peak_args() -> list[str]:
+        duration = probe(top_src)
+        at = measure(top_src)
+        # No audible window: two thirds in, where a clip's payoff usually is.
+        at = duration * 2 / 3 if at is None else min(at, max(0.0, duration - _RMS_WINDOW_S))
+        return build_peak_frame_args(top_src, at, peak)
+
+    _render_cached(peak, {"kind": "peak", "src": _file_fingerprint(top_src)}, peak_args, run)
+
     return BaseRender(
         base_16x9=base,
         base_9x16=short_path,
         offsets=tuple(meta["offsets"]),
         duration_s=meta["duration_s"],
+        peak_frame=peak,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Thumbnail frame
+# --------------------------------------------------------------------------- #
+
+def parse_rms_windows(text: str) -> list[tuple[float, float]]:
+    """(window start, RMS dB) pairs from `ametadata=mode=print` output."""
+    windows: list[tuple[float, float]] = []
+    start = None
+    for line in text.splitlines():
+        if "pts_time:" in line:
+            start = float(line.split("pts_time:", 1)[1].split()[0])
+        elif "RMS_level=" in line and start is not None:
+            windows.append((start, float(line.split("=", 1)[1])))
+            start = None
+    return windows
+
+
+def loudest_moment(
+    src: Path, *, capture: Callable[[list[str]], str] = run_ffmpeg_capture,
+) -> float | None:
+    """Middle of the loudest `_RMS_WINDOW_S` window of `src`, or None if silent."""
+    window = int(_RMS_WINDOW_S * _SAMPLE_RATE)
+    out = capture([
+        "-hide_banner", "-nostats", "-i", str(src), "-vn",
+        "-af",
+        f"aresample={_SAMPLE_RATE},asetnsamples=n={window},astats=metadata=1:reset=1,"
+        f"ametadata=mode=print:key=lavfi.astats.Overall.RMS_level:file=-",
+        "-f", "null", "-",
+    ])
+    audible = [(t, db) for t, db in parse_rms_windows(out) if db != float("-inf")]
+    if not audible:
+        return None
+    start, _ = max(audible, key=lambda w: w[1])
+    return start + _RMS_WINDOW_S / 2
+
+
+def build_peak_frame_args(src: Path, at: float, dst: Path) -> list[str]:
+    return ["-y", "-ss", f"{at:.3f}", "-i", str(src), "-frames:v", "1", "-update", "1", str(dst)]
+
+
+# --------------------------------------------------------------------------- #
+# Language pass
+# --------------------------------------------------------------------------- #
+
+def _title_draw(title_file: Path, font_size: int, x: str, y: str, align: str = "C") -> str:
+    # textfile: titles come from channel profiles and need no escaping there;
+    # expansion=none keeps a literal "%" from being read as a directive.
+    return (
+        f"drawtext=fontfile='{_escape_path(fonts.BRAND_FONT)}':"
+        f"textfile='{_escape_path(title_file)}':expansion=none:"
+        f"fontsize={font_size}:fontcolor=white:borderw=6:bordercolor=black:"
+        f"line_spacing=10:text_align={align}:x={x}:y={y}"
+    )
+
+
+def build_medium_args(base: Path, outro: Path, *, title_file: Path, dst: Path) -> list[str]:
+    card = _title_draw(title_file, _TITLE_16X9[1], "(w-text_w)/2", "(h-text_h)/2")
+    graph = (
+        f"[0:v]{card},setsar=1,format=yuv420p[tv];"
+        f"[1:a]atrim=0:{TITLE_CARD_S},asetpts=PTS-STARTPTS[ta];"
+        f"[2:v]setsar=1[bv];[3:v]setsar=1[ov];"
+        f"[tv][ta][bv][2:a][ov][3:a]concat=n=3:v=1:a=1[v][a]"
+    )
+    return [
+        "-y",
+        "-f", "lavfi", "-i", f"color=c={_CARD_COLOR}:s=1920x1080:r={_FPS}:d={TITLE_CARD_S}",
+        "-f", "lavfi", "-i", f"anullsrc=r={_SAMPLE_RATE}:cl=stereo",
+        "-i", str(base), "-i", str(outro),
+        "-filter_complex", graph,
+        "-map", "[v]", "-map", "[a]",
+        *_FINAL_ENCODE, str(dst),
+    ]
+
+
+def build_short_args(base: Path, outro: Path, *, title_file: Path, dst: Path) -> list[str]:
+    title = _title_draw(title_file, _TITLE_9X16[1], "(w-text_w)/2", f"({_SHORT_TOP_BAND}-text_h)/2")
+    graph = (
+        f"[0:v]{title},setsar=1[bv];[1:v]setsar=1[ov];"
+        f"[bv][0:a][ov][1:a]concat=n=2:v=1:a=1[v][a]"
+    )
+    return [
+        "-y", "-i", str(base), "-i", str(outro),
+        "-filter_complex", graph,
+        "-map", "[v]", "-map", "[a]",
+        *_FINAL_ENCODE, str(dst),
+    ]
+
+
+def build_thumbnail_args(frame: Path, *, title_file: Path, dst: Path) -> list[str]:
+    title = _title_draw(title_file, _TITLE_THUMB[1], "48", "h-text_h-48", align="L")
+    vf = (
+        "scale=1280:720:force_original_aspect_ratio=increase,crop=1280:720,setsar=1,"
+        "drawbox=x=0:y=ih*0.45:w=iw:h=ih*0.55:color=black@0.45:t=fill,"
+        f"{title}"
+    )
+    return ["-y", "-i", str(frame), "-vf", vf, "-frames:v", "1", "-update", "1", "-q:v", "2", str(dst)]
+
+
+def _input_hash(path: Path) -> str:
+    """The cache hash a base output was rendered with, else its file fingerprint."""
+    return cache.read_hash_file(path.with_suffix(".hash")) or _file_fingerprint(path)
+
+
+def _write_title(lang_dir: Path, name: str, title: str, width: int) -> Path:
+    path = lang_dir / f"title_{name}.txt"
+    text = "\n".join(textwrap.wrap(title, width=width, break_long_words=False)) or title
+    # newline="\n": on Windows the default writes \r\n, and drawtext renders
+    # the \r as a second line break.
+    path.write_text(text, encoding="utf-8", newline="\n")
+    return path
+
+
+def render_language(
+    base: BaseRender,
+    *,
+    title: str,
+    outro_16x9: Path,
+    outro_9x16: Path | None,
+    lang_dir: Path,
+    run: Callable[[list[str]], None] = run_ffmpeg,
+    probe: Callable[[Path], float] = probe_duration,
+) -> LanguageRender:
+    """Render (or reuse) one channel's medium, Short and thumbnail.
+
+    `title` is the finished title, episode number included. Outputs re-render
+    only when their base output, the outro or the title change.
+    """
+    lang_dir.mkdir(parents=True, exist_ok=True)
+
+    medium = lang_dir / "medio.mp4"
+    card = _write_title(lang_dir, "16x9", title, _TITLE_16X9[0])
+    _render_cached(
+        medium,
+        {"kind": "medium", "base": _input_hash(base.base_16x9),
+         "outro": _file_fingerprint(outro_16x9), "title": title},
+        lambda: build_medium_args(base.base_16x9, outro_16x9, title_file=card, dst=medium),
+        run,
+    )
+
+    short = None
+    if base.base_9x16 is not None:
+        if outro_9x16 is None:
+            raise RenderError("edition has a Short but no 9:16 outro was given")
+        total = probe(base.base_9x16) + probe(outro_9x16)
+        if total > SHORT_MAX_S:
+            raise RenderError(f"Short would last {total:.1f} s, over the {SHORT_MAX_S} s cap")
+        short = lang_dir / "short.mp4"
+        band = _write_title(lang_dir, "9x16", title, _TITLE_9X16[0])
+        _render_cached(
+            short,
+            {"kind": "short", "base": _input_hash(base.base_9x16),
+             "outro": _file_fingerprint(outro_9x16), "title": title},
+            lambda: build_short_args(base.base_9x16, outro_9x16, title_file=band, dst=short),
+            run,
+        )
+
+    thumb = lang_dir / "thumb.jpg"
+    thumb_title = _write_title(lang_dir, "thumb", title, _TITLE_THUMB[0])
+    _render_cached(
+        thumb,
+        {"kind": "thumb", "peak": _input_hash(base.peak_frame), "title": title},
+        lambda: build_thumbnail_args(base.peak_frame, title_file=thumb_title, dst=thumb),
+        run,
+    )
+    return LanguageRender(medium=medium, short=short, thumbnail=thumb)

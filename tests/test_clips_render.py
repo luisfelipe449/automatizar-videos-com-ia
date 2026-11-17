@@ -241,10 +241,15 @@ PROBES = {"raw_10": 58.0, "raw_20": 10.0, "seg_01": 10.0, "seg_02": 58.0}
 def test_render_base_renders_segments_concat_and_short(tmp_path):
     run = FakeFFmpeg()
     out = render_base(_plan(), _clips(tmp_path), tmp_path / "ed", run=run,
-                      probe=_probe(PROBES), icons_dir=tmp_path)
+                      probe=_probe(PROBES), icons_dir=tmp_path, measure=lambda p: 12.5)
     assert isinstance(out, BaseRender)
     names = [Path(c[-1]).name for c in run.calls]
-    assert names == ["seg_01.mp4", "seg_02.mp4", "base_16x9.mp4", "base_9x16.mp4"]
+    assert names == ["seg_01.mp4", "seg_02.mp4", "base_16x9.mp4", "base_9x16.mp4", "peak.png"]
+    # The thumbnail frame comes from the #1 clip's raw file at its loudest moment.
+    peak = run.calls[-1]
+    assert peak[peak.index("-i") + 1].endswith("raw_10.mp4")
+    assert peak[peak.index("-ss") + 1] == "12.500"
+    assert out.peak_frame == tmp_path / "ed" / "peak.png"
     # seg_01 holds rank 2 (countdown).
     assert "text='#2'" in _filter(run.calls[0])
     assert out.offsets == pytest.approx((0.0, 10.0 - XFADE_S))
@@ -257,10 +262,10 @@ def test_render_base_renders_segments_concat_and_short(tmp_path):
 def test_render_base_is_cached(tmp_path):
     clips = _clips(tmp_path)
     render_base(_plan(), clips, tmp_path / "ed", run=FakeFFmpeg(),
-                probe=_probe(PROBES), icons_dir=tmp_path)
+                probe=_probe(PROBES), icons_dir=tmp_path, measure=lambda p: 1.0)
     again = FakeFFmpeg()
     out = render_base(_plan(), clips, tmp_path / "ed", run=again,
-                      probe=_probe(PROBES), icons_dir=tmp_path)
+                      probe=_probe(PROBES), icons_dir=tmp_path, measure=lambda p: 1.0)
     assert again.calls == []
     assert out.offsets == pytest.approx((0.0, 9.7))
 
@@ -268,18 +273,18 @@ def test_render_base_is_cached(tmp_path):
 def test_render_base_rerenders_only_what_changed(tmp_path):
     clips = _clips(tmp_path)
     render_base(_plan(), clips, tmp_path / "ed", run=FakeFFmpeg(),
-                probe=_probe(PROBES), icons_dir=tmp_path)
+                probe=_probe(PROBES), icons_dir=tmp_path, measure=lambda p: 1.0)
     clips[20].broadcaster_name = "renamed"
     again = FakeFFmpeg()
     render_base(_plan(), clips, tmp_path / "ed", run=again,
-                probe=_probe(PROBES), icons_dir=tmp_path)
+                probe=_probe(PROBES), icons_dir=tmp_path, measure=lambda p: 1.0)
     assert [Path(c[-1]).name for c in again.calls] == ["seg_01.mp4", "base_16x9.mp4"]
 
 
 def test_render_base_without_short(tmp_path):
     run = FakeFFmpeg()
     out = render_base(_plan(with_short=False), _clips(tmp_path), tmp_path / "ed", run=run,
-                      probe=_probe(PROBES), icons_dir=tmp_path)
+                      probe=_probe(PROBES), icons_dir=tmp_path, measure=lambda p: 1.0)
     assert out.base_9x16 is None
     assert "base_9x16.mp4" not in [Path(c[-1]).name for c in run.calls]
 
@@ -289,7 +294,7 @@ def test_render_base_requires_downloaded_clips(tmp_path):
     clips[10].local_path = None
     with pytest.raises(RenderError, match="10"):
         render_base(_plan(), clips, tmp_path / "ed", run=FakeFFmpeg(),
-                    probe=_probe(PROBES), icons_dir=tmp_path)
+                    probe=_probe(PROBES), icons_dir=tmp_path, measure=lambda p: 1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -331,3 +336,25 @@ def test_render_base_real_ffmpeg(tmp_path):
     assert out.offsets[1] == pytest.approx(4.0 - XFADE_S, abs=0.05)
     assert probe_resolution(out.base_9x16) == (1080, 1920)
     assert probe_duration(out.base_9x16) == pytest.approx(4.5, abs=0.1)
+
+    # Language pass, with synthetic outros so no TTS is called.
+    from app.clips.render import TITLE_CARD_S, render_language
+    from app.utils.ffmpeg_helpers import run_ffmpeg
+
+    outros = {}
+    for aspect, size in (("16x9", "1920x1080"), ("9x16", "1080x1920")):
+        outros[aspect] = tmp_path / f"outro_{aspect}.mp4"
+        run_ffmpeg([
+            "-y", "-f", "lavfi", "-i", f"color=c=navy:s={size}:r=30:d=2",
+            "-f", "lavfi", "-i", "sine=frequency=330:sample_rate=48000:duration=2",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-ac", "2",
+            "-shortest", str(outros[aspect]),
+        ])
+    lang = render_language(out, title="GTA 6 Momentos Engraçados da Semana #12",
+                           outro_16x9=outros["16x9"], outro_9x16=outros["9x16"],
+                           lang_dir=tmp_path / "ed" / "pt-BR")
+    assert probe_duration(lang.medium) == pytest.approx(TITLE_CARD_S + 9.7 + 2.0, abs=0.15)
+    assert probe_resolution(lang.medium) == (1920, 1080)
+    assert probe_duration(lang.short) == pytest.approx(4.5 + 2.0, abs=0.15)
+    assert probe_resolution(lang.short) == (1080, 1920)
+    assert probe_resolution(lang.thumbnail) == (1280, 720)
