@@ -128,7 +128,13 @@ def mocked_services(monkeypatch, redirected_dirs: Path):
         out.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 1024)
         return out
 
-    def fake_upload_short(video_path: Path, script: Script, *, privacy_status: str | None = None) -> str:
+    def fake_upload_short(
+        video_path: Path,
+        script: Script,
+        *,
+        privacy_status: str | None = None,
+        category: int | None = None,
+    ) -> str:
         calls["upload"] += 1
         rec = filepaths.upload_record_path(script.job_id)
         rec.parent.mkdir(parents=True, exist_ok=True)
@@ -301,6 +307,22 @@ def test_account_parameter_accepted(mocked_services, redirected_dirs):
         account={"oauth_token": "test-token"},
     )
     assert result["success"] is True
+
+
+def test_category_is_forwarded_to_upload(mocked_services, redirected_dirs, monkeypatch):
+    """The job's YouTube category reaches upload_short unchanged."""
+    seen: list[int | None] = []
+    fake_upload = orchestrator.upload_short
+
+    def spy_upload(video_path, script, **kwargs):
+        seen.append(kwargs.get("category"))
+        return fake_upload(video_path, script, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "upload_short", spy_upload)
+
+    result = orchestrator.run_pipeline("prompt", job_id="job-category", category=20)
+    assert result["success"] is True
+    assert seen == [20]
 
 
 def test_cli_help_exits_zero_and_mentions_prompt():

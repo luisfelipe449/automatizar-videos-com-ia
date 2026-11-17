@@ -42,17 +42,40 @@ def account_with_quota(test_db):
         return account.id
 
 
-@pytest.fixture
-def pending_job(test_db):
-    """Create pending job without account assignment."""
+def _make_account(session, *, name: str, quota_used: int = 0, is_active: bool = True) -> int:
+    account = Account(
+        name=name,
+        email=f"{name.lower().replace(' ', '')}@example.com",
+        client_id=f"client-{name}",
+        client_secret=f"secret-{name}",
+        refresh_token=f"refresh-{name}",
+        daily_quota=10000,
+        quota_used=quota_used,
+        quota_reset_at=datetime.now(timezone.utc) + timedelta(hours=24),
+        is_active=is_active,
+    )
+    session.add(account)
+    session.commit()
+    session.refresh(account)
+    return account.id
+
+
+def _enqueue(test_db, account_id: int | None) -> str:
     with get_session(test_db) as session:
-        job_queue = JobQueueManager(session)
-        job = job_queue.enqueue(prompt="Test video about cats")
-        return job.job_id
+        return JobQueueManager(session).enqueue(
+            prompt="Test video about cats", account_id=account_id
+        ).job_id
 
 
-def test_run_job_assigns_account_and_updates_status(test_db, account_with_quota, pending_job):
-    """run_job should assign available account and update job status."""
+@pytest.fixture
+def pending_job(test_db, account_with_quota):
+    """Pending job assigned to `account_with_quota` — accounts are chosen at
+    enqueue time; the runner never picks one itself."""
+    return _enqueue(test_db, account_with_quota)
+
+
+def test_run_job_uses_assigned_account_and_updates_status(test_db, account_with_quota, pending_job):
+    """run_job should run with the job's account and record completion."""
     with patch("app.core.pipeline_runner.run_pipeline") as mock_pipeline:
         mock_pipeline.return_value = {
             "success": True,
@@ -65,7 +88,7 @@ def test_run_job_assigns_account_and_updates_status(test_db, account_with_quota,
             runner = PipelineRunner(session)
             runner.run_job(pending_job)
 
-            # Verify job was assigned account and marked running
+            # Verify job kept its account and completed
             job = session.query(Job).filter_by(job_id=pending_job).first()
             assert job.account_id == account_with_quota
             assert job.status == "completed"
@@ -120,99 +143,74 @@ def test_run_job_updates_stages_during_execution(test_db, account_with_quota, pe
             assert job.status == "completed"
 
 
-def test_quota_exceeded_resets_job_with_different_account(test_db, pending_job):
-    """run_job should reset job to pending with different account on quota exceeded."""
-    # Create two accounts
-    with get_session(test_db) as session:
-        account1 = Account(
-            name="Account 1",
-            email="acc1@example.com",
-            client_id="client1",
-            client_secret="secret1",
-            refresh_token="refresh1",
-            daily_quota=10000,
-            quota_used=8500,  # Close to quota limit
-            quota_reset_at=datetime.now(timezone.utc) + timedelta(hours=24),
-            is_active=True
-        )
-        account2 = Account(
-            name="Account 2",
-            email="acc2@example.com",
-            client_id="client2",
-            client_secret="secret2",
-            refresh_token="refresh2",
-            daily_quota=10000,
-            quota_used=0,  # Has plenty of quota
-            quota_reset_at=datetime.now(timezone.utc) + timedelta(hours=24),
-            is_active=True
-        )
-        session.add_all([account1, account2])
-        session.commit()
-        session.refresh(account1)
-        session.refresh(account2)
-        acc1_id = account1.id
-        acc2_id = account2.id
-
-    # First attempt with account1 fails with quota exceeded
-    # Second attempt with account2 succeeds
+def test_quota_exceeded_during_upload_leaves_video_for_manual_upload(
+    test_db, account_with_quota, pending_job
+):
+    """A YouTube quota error fails the job at `render` so the rendered video
+    can be uploaded by hand, and consumes no quota."""
     with patch("app.core.pipeline_runner.run_pipeline") as mock_pipeline:
-        # First call raises quota exceeded
-        mock_pipeline.side_effect = [
-            YouTubeQuotaExceeded("quotaExceeded"),
-            {
-                "success": True,
-                "video_id": "abc123",
-                "stages_completed": ["script", "tts", "captions", "clips", "render", "upload"],
-                "error": None
-            }
-        ]
+        mock_pipeline.side_effect = YouTubeQuotaExceeded("quotaExceeded")
 
         with get_session(test_db) as session:
-            runner = PipelineRunner(session)
+            PipelineRunner(session).run_job(pending_job)
 
-            # First attempt
-            runner.run_job(pending_job)
-
-            # Verify job was reset to pending after quota exceeded
             job = session.query(Job).filter_by(job_id=pending_job).first()
-            assert job.status == "pending"
-            assert job.account_id is None  # Unassigned
+            assert job.status == "failed"
+            assert job.stage == "render"
+            assert job.account_id == account_with_quota
+            assert "manual upload" in job.error_message.lower()
 
-            # Second attempt with different account
-            runner.run_job(pending_job)
-
-            # Verify job completed with second account
-            job = session.query(Job).filter_by(job_id=pending_job).first()
-            assert job.status == "completed"
-            assert job.account_id == acc2_id  # Different account
+            account = session.query(Account).filter_by(id=account_with_quota).first()
+            assert account.quota_used == 0
 
 
-def test_run_job_handles_no_available_account(test_db, pending_job):
-    """run_job should mark job as failed when no account available."""
-    # Create account with exhausted quota
+def test_run_job_fails_when_job_has_no_account(test_db):
+    """Jobs without an account fail immediately instead of borrowing one."""
     with get_session(test_db) as session:
-        account = Account(
-            name="Exhausted Account",
-            email="exhausted@example.com",
-            client_id="client_exhausted",
-            client_secret="secret_exhausted",
-            refresh_token="refresh_exhausted",
-            daily_quota=10000,
-            quota_used=10000,  # Fully exhausted
-            quota_reset_at=datetime.now(timezone.utc) + timedelta(hours=24),
-            is_active=True
-        )
-        session.add(account)
-        session.commit()
+        _make_account(session, name="Idle Account")  # available, but must not be used
+    job_id = _enqueue(test_db, account_id=None)
 
+    with patch("app.core.pipeline_runner.run_pipeline") as mock_pipeline:
+        with get_session(test_db) as session:
+            PipelineRunner(session).run_job(job_id)
+
+            job = session.query(Job).filter_by(job_id=job_id).first()
+            assert job.status == "failed"
+            assert job.account_id is None
+            assert "no account assigned" in job.error_message.lower()
+        mock_pipeline.assert_not_called()
+
+
+def test_run_job_fails_when_account_lacks_quota(test_db):
+    """An account below one upload's worth of quota fails the job up front."""
     with get_session(test_db) as session:
-        runner = PipelineRunner(session)
-        runner.run_job(pending_job)
+        acc_id = _make_account(session, name="Exhausted Account", quota_used=9000)
+    job_id = _enqueue(test_db, acc_id)
 
-        # Verify job was marked as failed
-        job = session.query(Job).filter_by(job_id=pending_job).first()
-        assert job.status == "failed"
-        assert "no available account" in job.error_message.lower()
+    with patch("app.core.pipeline_runner.run_pipeline") as mock_pipeline:
+        with get_session(test_db) as session:
+            PipelineRunner(session).run_job(job_id)
+
+            job = session.query(Job).filter_by(job_id=job_id).first()
+            assert job.status == "failed"
+            assert "doesn't have enough quota" in job.error_message
+        mock_pipeline.assert_not_called()
+
+
+def test_run_job_fails_when_account_inactive(test_db):
+    """A deactivated account fails the job up front."""
+    with get_session(test_db) as session:
+        acc_id = _make_account(session, name="Paused Account", is_active=False)
+    job_id = _enqueue(test_db, acc_id)
+
+    with patch("app.core.pipeline_runner.run_pipeline") as mock_pipeline:
+        with get_session(test_db) as session:
+            PipelineRunner(session).run_job(job_id)
+
+            job = session.query(Job).filter_by(job_id=job_id).first()
+            assert job.status == "failed"
+            assert "inactive" in job.error_message
+        mock_pipeline.assert_not_called()
 
 
 def test_run_job_handles_pipeline_failure(test_db, account_with_quota, pending_job):
