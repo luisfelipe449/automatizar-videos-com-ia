@@ -10,8 +10,11 @@ Editions render into `<editions_dir>/<date>_<format>/`, one subdirectory per
 channel profile key holding `medio.mp4`, `short.mp4`, `thumb.jpg` and
 `metadata.json`. `status.json` records each stage's outcome and time.
 
-The harvest window ends at 08:00 in Sao Paulo on the edition day (or now,
-if earlier). Clip times are stored in UTC without an offset, so every window
+The harvest windows end at 08:00 in Sao Paulo on the edition day (or now,
+if earlier). Each distinct format window is fetched: the last 24 h every
+day, and the last 7 days as well when a weekly format runs, so the weekly
+ranking sees refreshed view counts. Each format still selects only from its
+own window. Clip times are stored in UTC without an offset, so every window
 bound is converted to UTC before it reaches a query.
 """
 from __future__ import annotations
@@ -271,6 +274,31 @@ def _short_budget(
     return SHORT_MAX_S - SHORT_SAFETY_S - max(lengths), source
 
 
+def _harvest(
+    session: Session, end: datetime, windows: set[timedelta], deps: Deps, report: DailyReport,
+) -> None:
+    """Fetch every window ending at `end` and upsert the union.
+
+    One fetch per distinct window: the source caps candidates per fetch by
+    views, so a week-long fetch alone could crowd out the last day's clips.
+    A failed fetch is reported; whatever was fetched is still stored.
+    """
+    candidates: list = []
+    fetched = False
+    source = None
+    for window in sorted(windows, reverse=True):
+        try:
+            source = source or deps.source()
+            candidates.extend(source.fetch(end - window, end))
+            fetched = True
+        except Exception as exc:  # noqa: BLE001 — plan from what is already stored
+            report.errors.append(f"harvest ({window}): {exc.__class__.__name__}: {exc}")
+            print(f"{_LOG_PREFIX} harvest of {window} failed, planning from stored clips: {exc}")
+    if fetched:
+        report.harvested = upsert_clips(session, candidates)
+        print(f"{_LOG_PREFIX} harvested {len(candidates)} clips (new, updated) = {report.harvested}")
+
+
 def _group_by_window(specs: Sequence[FormatSpec]) -> dict[timedelta, list[FormatSpec]]:
     groups: dict[timedelta, list[FormatSpec]] = {}
     for spec in specs:
@@ -300,15 +328,8 @@ def run_daily(
         print(f"{_LOG_PREFIX} no format due on {day}")
         return report
 
-    # Harvest covers one day; weekly formats draw on what the dailies stored.
     if not skip_harvest:
-        try:
-            candidates = deps.source().fetch(end - timedelta(hours=24), end)
-            report.harvested = upsert_clips(session, candidates)
-            print(f"{_LOG_PREFIX} harvested {len(candidates)} clips (new, updated) = {report.harvested}")
-        except Exception as exc:  # noqa: BLE001 — plan from what is already stored
-            report.errors.append(f"harvest: {exc.__class__.__name__}: {exc}")
-            print(f"{_LOG_PREFIX} harvest failed, planning from stored clips: {exc}")
+        _harvest(session, end, {spec.window for spec in specs}, deps, report)
 
     widest = max(spec.window for spec in specs)
     ready = deps.download(session, _clips_in_window(session, end, widest))

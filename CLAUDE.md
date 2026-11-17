@@ -313,8 +313,9 @@ Spec: `docs/superpowers/specs/2026-11-17-gta6-clips-design.md`. Plan with
 task status: `docs/superpowers/plans/2026-11-17-gta6-clips.md`. User-facing
 guide (pt-BR): README "Modo Clips".
 
-**Flow** (`app/clips/pipeline.py:run_daily`): harvest the 24 h up to 08:00
-Sao Paulo (`sources/twitch.py`) → `store.upsert_clips` → `download.ensure_downloaded`
+**Flow** (`app/clips/pipeline.py:run_daily`): harvest each format window up
+to 08:00 Sao Paulo, i.e. the last 24 h plus the last 7 days on weekly days
+(`sources/twitch.py`, one fetch per window) → `store.upsert_clips` → `download.ensure_downloaded`
 (yt-dlp + 480p proxy) → `classify.Classifier` (Gemini watches the proxy;
 Groq judges the title when Gemini fails) → `select.plan_day` → `render.render_base`
 (language-neutral) → per channel profile `outro.render_outro` + `render.render_language`

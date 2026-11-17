@@ -21,6 +21,7 @@ from app.clips.pipeline import (
 )
 from app.clips.profiles import load_profile
 from app.clips.render import BaseRender, LanguageRender
+from app.clips.store import upsert_clips
 from app.db.database import Base, get_engine, get_session
 from app.db.models import Clip, Edition
 
@@ -59,7 +60,7 @@ class FakeSource:
 
     def fetch(self, since, until):
         self.windows.append((since, until))
-        return self.candidates
+        return [c for c in self.candidates if since <= c.created_at <= until]
 
 
 class FakeClassifier:
@@ -173,6 +174,25 @@ def test_harvest_asks_for_the_last_24_hours(session, tmp_path):
     h = Harness(tmp_path)
     h.run(session)
     assert h.source.windows == [(END - timedelta(hours=24), END)]
+
+
+def test_weekly_day_harvests_the_week_as_well(session, tmp_path):
+    # The week's clips get fresh view counts before the weekly ranking; the
+    # day is still fetched on its own so the candidate cap cannot crowd it out.
+    h = Harness(tmp_path)
+    h.run(session, specs=[TOP, FUNNY, FORMATS["top10_weekly"]], dry_run=True)
+    assert sorted(h.source.windows) == [
+        (END - timedelta(days=7), END), (END - timedelta(hours=24), END),
+    ]
+
+
+def test_weekly_harvest_refreshes_older_view_counts(session, tmp_path):
+    old = _candidates(n_top=3, n_funny=0, hours_ago=72)
+    upsert_clips(session, old)
+    fresh_views = [c.model_copy(update={"view_count": 50_000}) for c in old]
+    h = Harness(tmp_path, candidates=fresh_views)
+    h.run(session, specs=[FORMATS["top10_weekly"]], dry_run=True, skip_classify=True)
+    assert {c.view_count for c in session.query(Clip)} == {50_000}
 
 
 # --------------------------------------------------------------------------- #
