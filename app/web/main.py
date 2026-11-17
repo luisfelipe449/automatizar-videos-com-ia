@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
 from app.db.migrations import upgrade_schema
-from app.web.routes import dashboard, accounts, jobs, api
+from app.web.routes import dashboard, accounts, jobs, api, editions
 
 
 def create_app() -> FastAPI:
@@ -34,6 +34,7 @@ def create_app() -> FastAPI:
     app.include_router(accounts.router, prefix="/accounts", tags=["accounts"])
     app.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
     app.include_router(api.router, prefix="/api", tags=["api"])
+    app.include_router(editions.router, prefix="/editions", tags=["editions"])
 
     return app
 

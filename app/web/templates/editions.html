@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+
+{% block title %}Clips {{ day }} - Video Automation{% endblock %}
+
+{% block content %}
+<div class="mb-6 flex flex-wrap items-end justify-between gap-4">
+    <div>
+        <h1 class="text-3xl font-bold text-gray-900">Clips editions</h1>
+        <p class="text-gray-600">Batch of {{ day.strftime('%d/%m/%Y') }}</p>
+    </div>
+    <form method="get" action="/editions" class="flex items-center gap-2">
+        <input type="date" name="date" value="{{ day.isoformat() }}"
+               class="border border-gray-300 rounded-md px-3 py-2 text-sm">
+        <button type="submit" class="bg-blue-600 text-white px-4 py-2 rounded-md text-sm hover:bg-blue-700">Show</button>
+    </form>
+</div>
+
+{% if recent %}
+<div class="mb-6 flex flex-wrap gap-2">
+    {% for d in recent %}
+    <a href="/editions?date={{ d.isoformat() }}"
+       class="px-3 py-1 rounded-full text-xs font-medium {% if d == day %}bg-blue-600 text-white{% else %}bg-white text-gray-700 hover:bg-gray-200{% endif %}">
+        {{ d.strftime('%d/%m') }}
+    </a>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="bg-white rounded-lg shadow overflow-hidden">
+    {% if editions %}
+    <table class="min-w-full">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="text-left py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Format</th>
+                <th class="text-left py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Status</th>
+                <th class="text-left py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Episode</th>
+                <th class="text-right py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Clips</th>
+                <th class="text-left py-3 px-6 text-xs font-medium text-gray-700 uppercase tracking-wider">Error</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-200">
+            {% for e in editions %}
+            <tr class="hover:bg-gray-50">
+                <td class="py-4 px-6 text-sm font-medium">
+                    <a href="/editions/{{ e.id }}" class="text-blue-600 hover:underline">{{ e.format_key }}</a>
+                </td>
+                <td class="py-4 px-6 text-sm">
+                    {% include "_edition_status.html" %}
+                </td>
+                <td class="py-4 px-6 text-sm text-gray-600">
+                    {% for key, n in e.numbers.items() %}<span class="mr-3">{{ key }} #{{ n }}</span>{% endfor %}
+                </td>
+                <td class="py-4 px-6 text-sm text-right text-gray-900">{{ e.items|length }}</td>
+                <td class="py-4 px-6 text-sm text-red-700">{{ e.error_message or '' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="p-6 text-gray-600">No editions for this day. Run <code>python -m app.clips daily</code>.</p>
+    {% endif %}
+</div>
+{% endblock %}

@@ -476,3 +476,179 @@ class TestCreateBatchEndpoint:
         resp = client.post("/jobs/create-batch", data=form, follow_redirects=False)
         assert resp.status_code == 400
         assert "angle 3" in resp.json()["detail"].lower()
+
+
+# --------------------------------------------------------------------------- #
+# Clips editions (approval dashboard)
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def editions_client(tmp_path, monkeypatch):
+    """Client on a temp DB with one rendered top_daily edition and its files.
+
+    Returns (TestClient, edition_id, editions_dir).
+    """
+    import json
+    from datetime import date
+
+    from app.db.database import Base, get_engine, get_session
+    from app.db.models import Clip, Edition, EditionClip
+    from app.web.dependencies import get_db
+
+    editions_dir = tmp_path / "editions"
+    monkeypatch.setattr("app.clips.pipeline.EDITIONS_DIR", editions_dir)
+
+    engine = get_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(engine)
+    with get_session(engine) as s:
+        clips = [
+            Clip(source="twitch", source_clip_id=f"c{i}", url=f"https://clips.twitch.tv/c{i}",
+                 broadcaster_name=f"streamer{i}", title="t", view_count=1000 - i, duration_s=30.0,
+                 created_at_source=datetime(2026, 11, 19, 3, tzinfo=timezone.utc), category="play")
+            for i in range(3)
+        ]
+        s.add_all(clips)
+        s.flush()
+        edition = Edition(format_key="top_daily", edition_date=date(2026, 11, 19), status="rendered")
+        edition.numbers = {"five-star-clips": 4, "five-star-clips-br": 2}
+        edition.items = [
+            EditionClip(clip_id=clips[2].id, position=1),
+            EditionClip(clip_id=clips[1].id, position=2),
+            EditionClip(clip_id=clips[0].id, position=3, in_short=True, trim_start_s=1.5),
+        ]
+        s.add(edition)
+        s.commit()
+        edition_id = edition.id
+
+    base = editions_dir / "2026-11-19_top_daily"
+    for key, title in (("five-star-clips", "GTA 6 Top Clips of the Day #4"),
+                       ("five-star-clips-br", "GTA 6 Melhores Clipes do Dia #2")):
+        lang = base / key
+        lang.mkdir(parents=True)
+        for name in ("medio.mp4", "short.mp4", "thumb.jpg"):
+            (lang / name).write_bytes(f"{key}/{name}".encode())
+        snippet = {"title": title, "description": f"desc {key}\n\n0:00 #3", "tags": ["gta 6"],
+                   "categoryId": "20", "defaultLanguage": "en"}
+        (lang / "metadata.json").write_text(json.dumps({"medium": snippet, "short": snippet}),
+                                            encoding="utf-8")
+    (base / "status.json").write_text(json.dumps(
+        {"stages": {"base": {"status": "done", "seconds": 12.3}}, "error": None}), encoding="utf-8")
+
+    def override_get_db():
+        with get_session(engine) as session:
+            yield session
+
+    app = create_app()
+    app.dependency_overrides[get_db] = override_get_db
+    return TestClient(app), edition_id, editions_dir, engine
+
+
+class TestEditions:
+    def test_list_shows_the_days_batch(self, editions_client):
+        client, edition_id, _, _ = editions_client
+        resp = client.get("/editions?date=2026-11-19")
+        assert resp.status_code == 200
+        assert f"/editions/{edition_id}" in resp.text
+        assert "top_daily" in resp.text and "rendered" in resp.text
+
+    def test_list_of_empty_day(self, editions_client):
+        client, _, _, _ = editions_client
+        resp = client.get("/editions?date=2026-11-20")
+        assert resp.status_code == 200
+        assert "No editions for this day" in resp.text
+
+    def test_list_rejects_bad_date(self, editions_client):
+        client, _, _, _ = editions_client
+        assert client.get("/editions?date=19-11-2026").status_code == 422
+
+    def test_detail_shows_players_titles_and_publish_times(self, editions_client):
+        client, edition_id, _, _ = editions_client
+        resp = client.get(f"/editions/{edition_id}")
+        assert resp.status_code == 200
+        text = resp.text
+        for key in ("five-star-clips", "five-star-clips-br"):
+            for piece in ("medio", "short", "thumb"):
+                assert f"/editions/{edition_id}/media/{key}/{piece}" in text
+        assert "GTA 6 Top Clips of the Day #4" in text
+        assert "GTA 6 Melhores Clipes do Dia #2" in text
+        # en: 15:00 New York = 17:00 BRT on 19/11; pt-BR: 11:00 Sao Paulo.
+        assert "15:00 America/New_York" in text and "19/11 17:00 BRT" in text
+        assert "11:00 America/Sao_Paulo" in text
+        # Clips in playback order, #1 last and marked as the Short.
+        assert text.index("streamer2") < text.index("streamer0")
+        assert "-1.5 s" in text
+        assert "Approve" in text and "Reject" in text
+        assert "12.3 s" in text
+
+    def test_detail_not_found(self, editions_client):
+        client, _, _, _ = editions_client
+        assert client.get("/editions/9999").status_code == 404
+
+    def test_approve_then_decision_is_final(self, editions_client):
+        from app.db.database import get_session
+        from app.db.models import Edition
+
+        client, edition_id, _, engine = editions_client
+        resp = client.post(f"/editions/{edition_id}/approve", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == f"/editions/{edition_id}"
+        with get_session(engine) as s:
+            edition = s.get(Edition, edition_id)
+            assert edition.status == "approved" and edition.decided_at is not None
+        assert client.post(f"/editions/{edition_id}/reject").status_code == 409
+        assert "Approve" not in client.get(f"/editions/{edition_id}").text
+
+    def test_reject(self, editions_client):
+        from app.db.database import get_session
+        from app.db.models import Edition
+
+        client, edition_id, _, engine = editions_client
+        client.post(f"/editions/{edition_id}/reject", follow_redirects=False)
+        with get_session(engine) as s:
+            assert s.get(Edition, edition_id).status == "rejected"
+
+    def test_cannot_decide_an_unrendered_edition(self, editions_client):
+        from app.db.database import get_session
+        from app.db.models import Edition
+
+        client, edition_id, _, engine = editions_client
+        with get_session(engine) as s:
+            s.get(Edition, edition_id).status = "planned"
+            s.commit()
+        assert client.post(f"/editions/{edition_id}/approve").status_code == 409
+
+    def test_download_is_an_attachment(self, editions_client):
+        client, edition_id, _, _ = editions_client
+        resp = client.get(f"/editions/{edition_id}/download/five-star-clips-br/short")
+        assert resp.status_code == 200
+        assert resp.content == b"five-star-clips-br/short.mp4"
+        assert resp.headers["content-type"] == "video/mp4"
+        disposition = resp.headers["content-disposition"]
+        assert disposition.startswith("attachment")
+        assert "2026-11-19_top_daily_five-star-clips-br_short.mp4" in disposition
+
+    def test_media_is_inline(self, editions_client):
+        client, edition_id, _, _ = editions_client
+        resp = client.get(f"/editions/{edition_id}/media/five-star-clips/thumb")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "image/jpeg"
+        assert resp.headers["content-disposition"].startswith("inline")
+
+    @pytest.mark.parametrize("profile, piece", [
+        ("nope", "short"),
+        ("five-star-clips", "status"),
+        ("..", "short"),
+        ("five-star-clips", "..%2Fstatus.json"),
+    ])
+    def test_download_rejects_unknown_channel_or_piece(self, editions_client, profile, piece):
+        client, edition_id, _, _ = editions_client
+        assert client.get(f"/editions/{edition_id}/download/{profile}/{piece}").status_code == 404
+
+    def test_download_missing_file(self, editions_client):
+        client, edition_id, editions_dir, _ = editions_client
+        (editions_dir / "2026-11-19_top_daily" / "five-star-clips" / "short.mp4").unlink()
+        assert client.get(f"/editions/{edition_id}/download/five-star-clips/short").status_code == 404
+
+    def test_nav_links_to_clips(self, editions_client):
+        client, _, _, _ = editions_client
+        assert 'href="/editions"' in client.get("/editions").text

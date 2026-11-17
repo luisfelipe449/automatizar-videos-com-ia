@@ -1,0 +1,142 @@
+{% extends "base.html" %}
+
+{% block title %}{{ edition.format_key }} {{ edition.edition_date }} - Video Automation{% endblock %}
+
+{% block content %}
+{% set e = edition %}
+<div class="mb-6">
+    <a href="/editions?date={{ e.edition_date.isoformat() }}" class="text-blue-600 hover:underline text-sm mb-2 inline-block">&larr; Batch of {{ e.edition_date.strftime('%d/%m/%Y') }}</a>
+    <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+            <h1 class="text-3xl font-bold text-gray-900">{{ e.format_key }}</h1>
+            <p class="text-gray-600">{{ e.edition_date.strftime('%d/%m/%Y') }} &middot; {% include "_edition_status.html" %}</p>
+        </div>
+        {% if e.status == 'rendered' %}
+        <div class="flex gap-2">
+            <form method="post" action="/editions/{{ e.id }}/approve">
+                <button type="submit" class="bg-green-600 text-white px-5 py-2 rounded-md font-medium hover:bg-green-700">Approve</button>
+            </form>
+            <form method="post" action="/editions/{{ e.id }}/reject"
+                  onsubmit="return confirm('Reject this edition? It leaves the day and cannot be undone here.');">
+                <button type="submit" class="bg-red-600 text-white px-5 py-2 rounded-md font-medium hover:bg-red-700">Reject</button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+    {% if e.error_message %}
+    <p class="mt-4 p-3 bg-red-50 text-red-800 rounded text-sm">{{ e.error_message }}</p>
+    {% endif %}
+</div>
+
+{% for ch in channels %}
+<section class="bg-white rounded-lg shadow p-6 mb-6">
+    <div class="flex flex-wrap items-baseline justify-between gap-2 mb-4">
+        <h2 class="text-xl font-bold text-gray-900">{{ ch.name }} <span class="text-gray-500 text-sm font-normal">{{ ch.language }}{% if ch.number %} &middot; #{{ ch.number }}{% endif %}</span></h2>
+        <p class="text-sm text-gray-700">Publish at <strong>{{ ch.publish_local }}</strong> ({{ ch.publish_brt }})</p>
+    </div>
+
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2">
+            <h3 class="text-sm font-medium text-gray-700 mb-2">Medium (16:9)</h3>
+            {% if ch.pieces.medio %}
+            <video controls preload="metadata" class="w-full rounded bg-black"
+                   src="/editions/{{ e.id }}/media/{{ ch.key }}/medio"
+                   {% if ch.pieces.thumb %}poster="/editions/{{ e.id }}/media/{{ ch.key }}/thumb"{% endif %}></video>
+            <a href="/editions/{{ e.id }}/download/{{ ch.key }}/medio" class="text-blue-600 hover:underline text-sm">Download medium</a>
+            {% else %}<p class="text-gray-500 text-sm">Not rendered.</p>{% endif %}
+        </div>
+        <div>
+            <h3 class="text-sm font-medium text-gray-700 mb-2">Short (9:16)</h3>
+            {% if ch.pieces.short %}
+            <video controls preload="metadata" class="w-full max-h-[32rem] rounded bg-black"
+                   src="/editions/{{ e.id }}/media/{{ ch.key }}/short"></video>
+            <a href="/editions/{{ e.id }}/download/{{ ch.key }}/short" class="text-blue-600 hover:underline text-sm">Download Short</a>
+            {% else %}<p class="text-gray-500 text-sm">No Short for this format.</p>{% endif %}
+        </div>
+    </div>
+
+    {% if ch.pieces.thumb %}
+    <div class="mt-6">
+        <h3 class="text-sm font-medium text-gray-700 mb-2">Thumbnail</h3>
+        <img src="/editions/{{ e.id }}/media/{{ ch.key }}/thumb" alt="thumbnail" class="w-80 rounded shadow">
+        <a href="/editions/{{ e.id }}/download/{{ ch.key }}/thumb" class="text-blue-600 hover:underline text-sm">Download thumbnail</a>
+    </div>
+    {% endif %}
+
+    {% if ch.metadata %}
+    <div class="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {% for kind in ['medium', 'short'] %}{% set m = ch.metadata[kind] %}{% if m %}
+        <div>
+            <h3 class="text-sm font-medium text-gray-700 mb-2">{{ kind|capitalize }}: title and description</h3>
+            {% set tid = ch.key ~ '-' ~ kind ~ '-title' %}{% set did = ch.key ~ '-' ~ kind ~ '-desc' %}
+            <div class="flex gap-2 mb-2">
+                <input id="{{ tid }}" readonly value="{{ m.title }}" class="flex-1 border border-gray-300 rounded px-2 py-1 text-sm">
+                <button type="button" data-copy="{{ tid }}" class="copy-btn bg-gray-200 px-3 rounded text-sm hover:bg-gray-300">Copy</button>
+            </div>
+            <textarea id="{{ did }}" readonly rows="8" class="w-full border border-gray-300 rounded px-2 py-1 text-sm font-mono">{{ m.description }}</textarea>
+            <button type="button" data-copy="{{ did }}" class="copy-btn bg-gray-200 px-3 py-1 rounded text-sm hover:bg-gray-300">Copy description</button>
+            <p class="mt-2 text-xs text-gray-600">Tags: {{ m.tags|join(', ') }}</p>
+        </div>
+        {% endif %}{% endfor %}
+    </div>
+    {% else %}
+    <p class="mt-6 text-gray-500 text-sm">No metadata yet (edition not rendered for this channel).</p>
+    {% endif %}
+</section>
+{% endfor %}
+
+<section class="bg-white rounded-lg shadow p-6 mb-6">
+    <h2 class="text-xl font-bold text-gray-900 mb-4">Clips (playback order)</h2>
+    <table class="min-w-full text-sm">
+        <thead class="bg-gray-50">
+            <tr>
+                <th class="text-left py-2 px-3">Rank</th>
+                <th class="text-left py-2 px-3">Streamer</th>
+                <th class="text-right py-2 px-3">Views</th>
+                <th class="text-right py-2 px-3">Duration</th>
+                <th class="text-left py-2 px-3">Category</th>
+                <th class="text-left py-2 px-3">Source</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-200">
+            {% for row in clips %}
+            <tr>
+                <td class="py-2 px-3 font-medium">#{{ row.rank }}{% if row.in_short %} <span class="ml-1 px-2 rounded-full bg-purple-100 text-purple-800 text-xs">Short{% if row.trim %}, -{{ '%.1f'|format(row.trim) }} s{% endif %}</span>{% endif %}</td>
+                <td class="py-2 px-3">{{ row.clip.broadcaster_name }}</td>
+                <td class="py-2 px-3 text-right">{{ '{:,}'.format(row.clip.view_count) }}</td>
+                <td class="py-2 px-3 text-right">{{ '%.1f'|format(row.clip.duration_s) }} s</td>
+                <td class="py-2 px-3">{{ row.clip.category or '-' }}{% if row.clip.needs_speech %} (speech){% endif %}</td>
+                <td class="py-2 px-3"><a href="{{ row.clip.url }}" target="_blank" rel="noopener" class="text-blue-600 hover:underline">{{ row.clip.source }}</a></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+{% if status %}
+<section class="bg-white rounded-lg shadow p-6">
+    <h2 class="text-xl font-bold text-gray-900 mb-4">Render stages</h2>
+    <ul class="text-sm">
+        {% for name, st in status.stages.items() %}
+        <li><span class="{% if st.status == 'failed' %}text-red-700{% else %}text-green-700{% endif %}">{{ st.status }}</span> {{ name }} &middot; {{ st.seconds }} s</li>
+        {% endfor %}
+    </ul>
+    {% if status.error %}<p class="mt-2 text-sm text-red-700">{{ status.error }}</p>{% endif %}
+</section>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.querySelectorAll('.copy-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        var field = document.getElementById(btn.dataset.copy);
+        navigator.clipboard.writeText(field.value).then(function () {
+            var label = btn.textContent;
+            btn.textContent = 'Copied';
+            setTimeout(function () { btn.textContent = label; }, 1200);
+        });
+    });
+});
+</script>
+{% endblock %}
