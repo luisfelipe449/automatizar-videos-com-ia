@@ -11,7 +11,7 @@ import pytest
 from app.clips import __main__ as cli
 from app.clips.formats import FORMATS, SHORT_MAX_S
 from app.clips.models import CandidateClip
-from app.clips.pipeline import Deps, edition_key, run_daily, window_end
+from app.clips.pipeline import SHORT_SAFETY_S, Deps, edition_key, run_daily, window_end
 from app.clips.profiles import load_profile
 from app.clips.render import BaseRender, LanguageRender
 from app.db.database import Base, get_engine, get_session
@@ -193,7 +193,20 @@ def test_top_and_funny_never_share_a_clip(session, tmp_path):
 
 def test_short_budget_comes_from_the_longest_9x16_outro(session, tmp_path):
     report = Harness(tmp_path).run(session)
-    assert report.short_budget_s == pytest.approx(SHORT_MAX_S - max(OUTRO_9X16_S.values()))
+    assert report.short_budget_s == pytest.approx(
+        SHORT_MAX_S - SHORT_SAFETY_S - max(OUTRO_9X16_S.values()))
+
+
+def test_short_trim_leaves_room_for_encoder_rounding(session, tmp_path):
+    # A 60 s #1 clip is cut so that clip + longest outro stays a margin under
+    # the cap: the encoded clip runs a few hundredths over its planned length.
+    candidates = _candidates()
+    candidates[0] = candidates[0].model_copy(update={"duration_s": 60.0})
+    Harness(tmp_path, candidates=candidates).run(session, specs=[TOP])
+    short = next(i for i in session.query(Edition).one().items if i.in_short)
+    kept = 60.0 - short.trim_start_s
+    assert kept + max(OUTRO_9X16_S.values()) == pytest.approx(SHORT_MAX_S - SHORT_SAFETY_S)
+    assert 0.25 <= SHORT_SAFETY_S <= 1.0
 
 
 def test_metadata_and_status_files_are_written(session, tmp_path):

@@ -297,6 +297,40 @@ def test_render_base_requires_downloaded_clips(tmp_path):
                     probe=_probe(PROBES), icons_dir=tmp_path, measure=lambda p: 1.0)
 
 
+def _short_call(run: FakeFFmpeg) -> list[str]:
+    return next(c for c in run.calls if c[-1].endswith("base_9x16.mp4"))
+
+
+def test_short_base_keeps_the_planned_length_when_the_file_runs_long(tmp_path):
+    # Twitch reports 60.0 s; the plan cuts 7.0 s to fit a 53 s budget. The
+    # file probes 60.04 s: the Short keeps the planned 53.0 s, ending where
+    # the clip ends.
+    plan = EditionPlan("top_daily", (
+        PlannedItem(clip_id=20, rank=2, position=1, duration_s=10.0),
+        PlannedItem(clip_id=10, rank=1, position=2, duration_s=60.0, in_short=True, trim_start_s=7.0),
+    ))
+    run = FakeFFmpeg()
+    render_base(plan, _clips(tmp_path), tmp_path / "ed", run=run,
+                probe=_probe({**PROBES, "raw_10": 60.04}), icons_dir=tmp_path, measure=lambda p: 1.0)
+    short = _short_call(run)
+    assert short[short.index("-ss") + 1] == "7.040"
+    assert "trim=duration=53.000" in _filter(short)
+    assert short[short.index("-t") + 1] == "53.000"
+
+
+def test_short_base_never_outlasts_the_file(tmp_path):
+    plan = EditionPlan("top_daily", (
+        PlannedItem(clip_id=20, rank=2, position=1, duration_s=10.0),
+        PlannedItem(clip_id=10, rank=1, position=2, duration_s=58.0, in_short=True),
+    ))
+    run = FakeFFmpeg()
+    render_base(plan, _clips(tmp_path), tmp_path / "ed", run=run,
+                probe=_probe({**PROBES, "raw_10": 57.9}), icons_dir=tmp_path, measure=lambda p: 1.0)
+    short = _short_call(run)
+    assert "-ss" not in short
+    assert "trim=duration=57.900" in _filter(short)
+
+
 # --------------------------------------------------------------------------- #
 # Real ffmpeg
 # --------------------------------------------------------------------------- #

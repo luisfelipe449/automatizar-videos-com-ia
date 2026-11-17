@@ -344,8 +344,11 @@ Scheduled by WSL cron (`*/30`) through `scripts/run_clips_daily.sh`; see
   before render because they are drawn into the video.
 - Render outputs are cached by a hash of their inputs (`<file>.hash`). Bump
   `render._GRAPH_VERSION` / `outro._GRAPH_VERSION` when a filter graph changes.
-- The Short budget is `SHORT_MAX_S` (59) minus the longest 9:16 outro; the
-  Short's clip loses its start, never its end.
+- The Short budget is `SHORT_MAX_S` (59) minus the longest 9:16 outro and
+  `pipeline.SHORT_SAFETY_S` (encoder rounding); the Short's clip loses its
+  start, never its end. `render_base` keeps the planned length (reported
+  duration − trim) and seeks to `probed − kept`, because the file can run a
+  few hundredths longer than Twitch reports.
 - Medium chapters follow YouTube's rules (`metadata.build_chapters`): first
   at 0:00, at least 3, each at least 10 s, or none are shown.
 

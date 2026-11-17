@@ -108,7 +108,7 @@ def pick_short(packed: Sequence[C], *, budget_s: float) -> tuple[C, float | None
     """The rank-1 clip and how much to cut from its start to fit `budget_s`.
 
     `budget_s` is the room left for the clip in the Short (the Short cap minus
-    the 9:16 outro). The start is cut because the payoff of a clip is
+    the 9:16 outro and a safety margin). The start is cut because the payoff of a clip is
     usually at its end. Returns (clip, None) when the clip fits whole.
     """
     if not packed:

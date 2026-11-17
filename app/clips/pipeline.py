@@ -41,6 +41,10 @@ _LOG_PREFIX = "[clips]"
 _CUTOFF = dt_time(8, 0)
 _CUTOFF_ZONE = ZoneInfo("America/Sao_Paulo")
 EDITIONS_DIR = CLIPS_DIR / "editions"
+# Held back from the Short budget: the encoded clip and outro each run a few
+# hundredths over their nominal length, and `render_language` refuses a Short
+# that crosses `SHORT_MAX_S` by any amount.
+SHORT_SAFETY_S = 0.5
 
 
 def _default_source():
@@ -271,10 +275,11 @@ def run_daily(
             report.errors.append(f"classify: {exc.__class__.__name__}: {exc}")
             print(f"{_LOG_PREFIX} classification failed: {exc}")
 
-    # The Short's clip gets what the longest 9:16 outro leaves under the cap.
+    # The Short's clip gets what the longest 9:16 outro leaves under the cap,
+    # less a safety margin for encoder rounding.
     budget = SHORT_MAX_S
     if any(spec.has_short for spec in specs) and profiles:
-        budget = SHORT_MAX_S - max(deps.probe(deps.outro(p, "9x16")) for p in profiles)
+        budget = SHORT_MAX_S - SHORT_SAFETY_S - max(deps.probe(deps.outro(p, "9x16")) for p in profiles)
     report.short_budget_s = budget
 
     ready_ids = {clip.id for clip in ready}

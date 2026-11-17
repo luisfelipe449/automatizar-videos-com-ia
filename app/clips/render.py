@@ -5,8 +5,9 @@ Per edition directory (`assets/clips/editions/<edition_key>/`):
   48 kHz stereo, loudness-normalised, with the "#rank" badge top-left and the
   streamer credit (platform icon + channel name) bottom-left.
 - `base_16x9.mp4`: the segments joined with a short crossfade.
-- `base_9x16.mp4`: the Short's clip over a blurred copy of itself, its start
-  cut by the plan's `trim_start_s`. No title; the language pass adds it.
+- `base_9x16.mp4`: the Short's clip over a blurred copy of itself, lasting
+  the plan's length (reported duration minus `trim_start_s`) and ending where
+  the clip ends. No title; the language pass adds it.
 - `base.json`: where each clip starts in `base_16x9.mp4` (chapters).
 - `peak.png`: the #1 clip's frame at its loudest moment, for thumbnails.
 
@@ -362,14 +363,20 @@ def render_base(
         src = sources[short.clip_id]
         credit = credit_for(clips[short.clip_id], icons_dir=icons_dir, font_for=font_for)
         short_path = edition_dir / "base_9x16.mp4"
+        # The plan's trim was computed from the platform-reported duration,
+        # which can be a few hundredths shorter than the file. The Short keeps
+        # the planned length and the clip's end; the seek absorbs the gap.
+        planned_keep = short.duration_s - (short.trim_start_s or 0.0)
         key = {"kind": "short", "src": _file_fingerprint(src), "trim": short.trim_start_s,
-               "credit": _credit_key(credit)}
-        _render_cached(
-            short_path, key,
-            lambda: build_short_base_args(src, short_path, duration=probe(src),
-                                          trim_start_s=short.trim_start_s, credit=credit),
-            run,
-        )
+               "keep": planned_keep, "credit": _credit_key(credit)}
+
+        def short_args() -> list[str]:
+            probed = probe(src)
+            seek = max(0.0, probed - planned_keep)
+            return build_short_base_args(src, short_path, duration=probed,
+                                         trim_start_s=seek or None, credit=credit)
+
+        _render_cached(short_path, key, short_args, run)
 
     top = next(item for item in items if item.rank == 1)
     top_src = sources[top.clip_id]
