@@ -1,0 +1,26 @@
+{
+  "display_name": "Five Star Clips",
+  "language": "en",
+  "tts_voice": "Kore",
+  "titles": {
+    "top_daily": "GTA 6 Top Clips of the Day #{n}",
+    "funny_daily": "GTA 6 Funny Moments #{n}",
+    "top10_weekly": "GTA 6 Top 10 Plays of the Week #{n}",
+    "funny_weekly": "GTA 6 Funny Moments of the Week #{n}"
+  },
+  "descriptions": {
+    "top_daily": "Every clip belongs to the streamer credited on screen.",
+    "funny_daily": "Every clip belongs to the streamer credited on screen.",
+    "top10_weekly": "Every clip belongs to the streamer credited on screen.",
+    "funny_weekly": "Every clip belongs to the streamer credited on screen."
+  },
+  "schedule": {
+    "top_daily": {"time": "15:00", "timezone": "America/New_York"},
+    "funny_daily": {"time": "15:00", "timezone": "America/Los_Angeles"},
+    "top10_weekly": {"time": "16:00", "timezone": "America/New_York"},
+    "funny_weekly": {"time": "16:00", "timezone": "America/New_York"}
+  },
+  "outro_cta": "Subscribe for the best GTA 6 moments every day!",
+  "hashtags": ["#GTA6", "#GTAVI"],
+  "tags": ["gta 6", "gta vi", "grand theft auto 6", "gta 6 clips", "gta 6 highlights", "gta 6 funny moments", "gta 6 gameplay"]
+}

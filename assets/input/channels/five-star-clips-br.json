@@ -1,0 +1,26 @@
+{
+  "display_name": "Five Star Clips BR",
+  "language": "pt-BR",
+  "tts_voice": "Kore",
+  "titles": {
+    "top_daily": "GTA 6 Melhores Clipes do Dia #{n}",
+    "funny_daily": "GTA 6 Momentos Engraçados #{n}",
+    "top10_weekly": "GTA 6 Top 10 Jogadas da Semana #{n}",
+    "funny_weekly": "GTA 6 Momentos Engraçados da Semana #{n}"
+  },
+  "descriptions": {
+    "top_daily": "Cada clipe pertence ao streamer creditado na tela.",
+    "funny_daily": "Cada clipe pertence ao streamer creditado na tela.",
+    "top10_weekly": "Cada clipe pertence ao streamer creditado na tela.",
+    "funny_weekly": "Cada clipe pertence ao streamer creditado na tela."
+  },
+  "schedule": {
+    "top_daily": {"time": "11:00", "timezone": "America/Sao_Paulo"},
+    "funny_daily": {"time": "17:00", "timezone": "America/Sao_Paulo"},
+    "top10_weekly": {"time": "14:00", "timezone": "America/Sao_Paulo"},
+    "funny_weekly": {"time": "14:00", "timezone": "America/Sao_Paulo"}
+  },
+  "outro_cta": "Se inscreve pra ver os melhores momentos de GTA 6 todo dia!",
+  "hashtags": ["#GTA6", "#GTAVI"],
+  "tags": ["gta 6", "gta vi", "grand theft auto 6", "gta 6 clipes", "gta 6 momentos engraçados", "gta 6 melhores momentos", "gta 6 brasil"]
+}

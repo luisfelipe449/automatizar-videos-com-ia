@@ -20,6 +20,9 @@ pydantic>=2,<3
 # Retries with exponential backoff + jitter
 tenacity~=9.0
 
+# IANA time zones for zoneinfo; Windows ships none. Channel schedules need them.
+tzdata==2026.5
+
 # Env loading
 python-dotenv~=1.0
 
