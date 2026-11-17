@@ -6,8 +6,9 @@ groq~=0.11
 anthropic[bedrock]>=0.97
 
 # Gemini (TTS primary; Imagen optional fallback for visuals; clip classifier).
-# >=0.8 for Part.from_bytes video input and GenerateContentConfig.media_resolution.
-google-genai>=0.8,<1
+# The clip classifier needs media_resolution on the Gemini API (not just
+# Vertex); 0.x SDKs reject it client-side.
+google-genai==2.34.0
 
 # YouTube Data API v3 + OAuth2
 google-api-python-client~=2.149

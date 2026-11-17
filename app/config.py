@@ -123,7 +123,14 @@ CLIPS_GAME_NAME: str = os.getenv("CLIPS_GAME_NAME", "Grand Theft Auto VI").strip
 # the classifier is the only per-clip cost, so this is the budget knob.
 CLIPS_MIN_VIEWS: int = int(os.getenv("CLIPS_MIN_VIEWS", "50"))
 CLIPS_MAX_CANDIDATES: int = int(os.getenv("CLIPS_MAX_CANDIDATES", "60"))
-CLIPS_CLASSIFIER_MODEL: str = os.getenv("CLIPS_CLASSIFIER_MODEL", "gemini-flash-latest").strip()
+# Gemini models tried in order for each clip; an overloaded (503/504) model
+# hands the clip to the next. Lite comes last: cheaper and less contended,
+# but a weaker judge of humour.
+CLIPS_CLASSIFIER_MODELS: list[str] = [
+    m.strip()
+    for m in os.getenv("CLIPS_CLASSIFIER_MODELS", "gemini-flash-latest,gemini-flash-lite-latest").split(",")
+    if m.strip()
+]
 
 # -----------------------------------------------------------------------------
 # Pipeline constants.
