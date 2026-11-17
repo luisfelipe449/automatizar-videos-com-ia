@@ -57,6 +57,7 @@ assets/input/*
 # ... and clips-mode channel profiles and brand outros, which a fresh clone needs.
 !assets/input/channels/
 !assets/input/outro_*.mp4
+!assets/input/outro_*.json
 
 # -----------------------------------------------------------------------------
 # Database

@@ -14,7 +14,16 @@ from pathlib import Path
 from app.config import FFMPEG_PATH
 
 _STDERR_TAIL_LINES = 40
-_RUN_KW = {"capture_output": True, "text": True, "encoding": "utf-8", "errors": "replace"}
+# stdin=DEVNULL: ffmpeg polls stdin for interactive keys ('q' to quit). With an
+# inherited stdin that never closes (WSL → Windows interop, pytest), it can
+# block until the subprocess timeout instead of finishing the encode.
+_RUN_KW = {
+    "capture_output": True,
+    "text": True,
+    "encoding": "utf-8",
+    "errors": "replace",
+    "stdin": subprocess.DEVNULL,
+}
 
 
 class FFmpegError(RuntimeError):
