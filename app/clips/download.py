@@ -2,10 +2,14 @@
 
 Files live in `<CLIPS_DIR>/raw/<source>_<id>.mp4` (+ `.proxy.mp4`). A clip
 counts as downloaded only when both files exist, so a crash between the two
-steps redoes the pair on the next run.
+steps redoes the pair on the next run. Neither file appears at its final name
+until it is whole: yt-dlp writes `<name>.part` and renames on success, and the
+proxy is encoded to `<name>.part.mp4` and renamed the same way. A killed or
+timed-out step therefore never leaves a partial file that counts as done.
 """
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -37,7 +41,8 @@ def proxy_path_for(raw: Path) -> Path:
 
 def build_download_cmd(url: str, dest: Path) -> list[str]:
     # yt-dlp runs as a module of this interpreter so the pinned version in
-    # requirements.txt is the one used, not whatever is on PATH.
+    # requirements.txt is the one used, not whatever is on PATH. Never pass
+    # --no-part: the `.part` file is what keeps a partial download off `dest`.
     return [
         sys.executable, "-m", "yt_dlp",
         "--no-playlist", "--no-progress", "--quiet", "--no-warnings",
@@ -71,11 +76,19 @@ def download_clip(url: str, dest: Path) -> None:
         raise DownloadError(f"yt-dlp failed for {url} (exit {result.returncode}): {tail}")
 
 
-def make_proxy(src: Path, dst: Path) -> None:
+def make_proxy(src: Path, dst: Path, *, run: Callable[[list[str]], None] = run_ffmpeg) -> None:
+    """Encode the proxy beside `dst` and rename it into place only on success."""
+    # Same directory, so the rename is atomic; `.mp4` last so FFmpeg picks the muxer.
+    tmp = dst.with_name(dst.stem + ".part.mp4")
     try:
-        run_ffmpeg(build_proxy_args(src, dst))
+        run(build_proxy_args(src, tmp))
+        os.replace(tmp, dst)
     except FFmpegError as exc:
+        tmp.unlink(missing_ok=True)
         raise DownloadError(f"proxy failed for {src.name}: {exc}") from exc
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _is_complete(path: Path) -> bool:

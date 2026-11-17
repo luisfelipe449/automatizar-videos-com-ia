@@ -1,6 +1,7 @@
 """Clip download (yt-dlp) and classifier proxy (FFmpeg)."""
 from __future__ import annotations
 
+import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ from app.clips.download import (
 )
 from app.db.database import Base, get_engine, get_session
 from app.db.models import Clip
+from app.utils.ffmpeg_helpers import FFmpegError
 
 
 def test_raw_path_is_per_source_and_sanitized(tmp_path):
@@ -38,6 +40,46 @@ def test_download_cmd_runs_pinned_yt_dlp_module():
     assert cmd[cmd.index("-f") + 1] == "best[height<=1080]/best"
     assert cmd[cmd.index("-o") + 1] == str(Path("out/twitch_Abc.mp4"))
     assert "--no-playlist" in cmd
+
+
+def test_download_cmd_keeps_yt_dlp_part_files():
+    # yt-dlp writes `<dest>.part` and renames it on success, so a killed or
+    # failed download never leaves a partial file at `dest`. --no-part would
+    # break that.
+    cmd = build_download_cmd("https://clips.twitch.tv/Abc", Path("out/twitch_Abc.mp4"))
+    assert "--no-part" not in cmd
+
+
+def _partial_writer(exc: BaseException | None):
+    calls: list[list[str]] = []
+
+    def run(args: list[str]) -> None:
+        calls.append(args)
+        Path(args[-1]).write_bytes(b"half a video")
+        if exc is not None:
+            raise exc
+    return run, calls
+
+
+def test_proxy_appears_only_when_ffmpeg_succeeds(tmp_path):
+    src, dst = tmp_path / "a.mp4", tmp_path / "a.proxy.mp4"
+    run, calls = _partial_writer(None)
+    download.make_proxy(src, dst, run=run)
+    assert Path(calls[0][-1]) != dst and Path(calls[0][-1]).parent == tmp_path
+    assert dst.read_bytes() == b"half a video"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["a.proxy.mp4"]
+
+
+@pytest.mark.parametrize("exc", [
+    FFmpegError(["ffmpeg"], 1, "killed"),
+    subprocess.TimeoutExpired(["ffmpeg"], 600),
+])
+def test_failed_proxy_leaves_no_partial_file(tmp_path, exc):
+    src, dst = tmp_path / "a.mp4", tmp_path / "a.proxy.mp4"
+    run, _ = _partial_writer(exc)
+    with pytest.raises((DownloadError, subprocess.TimeoutExpired)):
+        download.make_proxy(src, dst, run=run)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_proxy_args_downscale_for_cheap_classification():
