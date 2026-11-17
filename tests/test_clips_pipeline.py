@@ -345,6 +345,22 @@ def test_failed_edition_does_not_stop_the_other(session, tmp_path):
     assert {r.format_key: r.outcome for r in again.editions}["top_daily"] == "rendered"
 
 
+def test_failed_rerender_takes_a_rendered_edition_back_to_planned(session, tmp_path):
+    # Its files may be half re-rendered: the dashboard must not offer Approve.
+    h = Harness(tmp_path)
+    h.run(session, specs=[TOP])
+    top = session.query(Edition).filter_by(format_key="top_daily").one()
+    assert top.status == "rendered"
+
+    h.fail_format = "top_daily"
+    report = h.run(session, specs=[TOP])
+
+    assert [r.outcome for r in report.editions] == ["failed"]
+    session.refresh(top)
+    assert top.status == "planned"
+    assert "ffmpeg exploded" in top.error_message
+
+
 def test_numbers_follow_approved_editions(session, tmp_path):
     prev = Edition(format_key="top_daily", edition_date=DAY - timedelta(days=1), status="approved")
     prev.numbers = {EN.key: 4, BR.key: 6}

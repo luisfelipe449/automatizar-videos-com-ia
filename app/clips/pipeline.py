@@ -317,6 +317,10 @@ def run_daily(
             _render_edition(session, edition, plan, profiles, editions_dir=editions_dir, deps=deps)
         except Exception as exc:  # noqa: BLE001 — one edition's failure must not stop the other
             session.rollback()
+            # A re-render may have replaced some files and not others, so a
+            # previously rendered edition must not stay approvable. Approved
+            # and rejected editions never reach this loop.
+            edition.status = "planned"
             edition.error_message = f"{exc.__class__.__name__}: {exc}"
             session.commit()
             print(f"{_LOG_PREFIX} {edition.format_key} failed: {exc}")
