@@ -1,0 +1,3 @@
+# Repo is stored with LF; Windows editors may write CRLF to the working tree.
+* text=auto eol=lf
+*.bat text eol=crlf
