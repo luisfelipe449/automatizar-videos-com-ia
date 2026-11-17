@@ -6,6 +6,11 @@ time window, downloaded clips only); this module never filters on dates.
 
 Rank vs position: `rank` 1 is the best clip. `position` is playback order,
 and editions play as a countdown, so rank 1 has the last position.
+
+Language preference: both rankings multiply a clip's score by
+`language_factor`, 1.0 for the channels' languages (and for a clip whose
+language is unknown) and `CLIPS_OTHER_LANGUAGE_FACTOR` for the rest. The
+`preferred`/`other_factor` parameters default to the config at call time.
 """
 from __future__ import annotations
 
@@ -14,6 +19,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Protocol, Sequence, TypeVar
 
+from app import config
 from app.clips.formats import FormatSpec
 
 # Funny clips that only land if you follow the streamer's speech lose 40% of
@@ -29,6 +35,7 @@ class RankableClip(Protocol):
     funny_score: float | None
     hype_score: float | None
     needs_speech: bool | None
+    language: str | None
 
 
 C = TypeVar("C", bound=RankableClip)
@@ -66,20 +73,51 @@ class SkippedEdition:
     reason: str
 
 
-def rank_top(clips: Sequence[C]) -> list[C]:
-    """Views desc; classification only breaks ties. Every clip qualifies."""
-    return sorted(clips, key=lambda c: (-c.view_count, -(c.hype_score or 0.0), c.id))
+def language_factor(language: str | None, *, preferred: Sequence[str], other_factor: float) -> float:
+    """1.0 for a preferred or unknown language, else `other_factor`.
+
+    Matches on the primary subtag, so "pt-br" counts as "pt".
+    """
+    if not language:
+        return 1.0
+    primary = language.strip().lower().split("-", 1)[0]
+    return 1.0 if primary in preferred else other_factor
 
 
-def _funny_score(clip: RankableClip) -> float:
+def _language_args(preferred: Sequence[str] | None, other_factor: float | None) -> tuple[Sequence[str], float]:
+    return (
+        config.CLIPS_PREFERRED_LANGUAGES if preferred is None else preferred,
+        config.CLIPS_OTHER_LANGUAGE_FACTOR if other_factor is None else other_factor,
+    )
+
+
+def rank_top(
+    clips: Sequence[C], *, preferred: Sequence[str] | None = None, other_factor: float | None = None,
+) -> list[C]:
+    """Views x language factor, desc; classification only breaks ties. Every clip qualifies."""
+    preferred, other_factor = _language_args(preferred, other_factor)
+
+    def key(c: RankableClip):
+        weighted = c.view_count * language_factor(c.language, preferred=preferred, other_factor=other_factor)
+        return (-weighted, -(c.hype_score or 0.0), c.id)
+
+    return sorted(clips, key=key)
+
+
+def _funny_score(clip: RankableClip, preferred: Sequence[str], other_factor: float) -> float:
     score = (clip.funny_score or 0.0) * math.log1p(clip.view_count)
-    return score * _NEEDS_SPEECH_FACTOR if clip.needs_speech else score
+    if clip.needs_speech:
+        score *= _NEEDS_SPEECH_FACTOR
+    return score * language_factor(clip.language, preferred=preferred, other_factor=other_factor)
 
 
-def rank_funny(clips: Sequence[C]) -> list[C]:
-    """`category == "funny"` only, by funny_score x log(1 + views)."""
+def rank_funny(
+    clips: Sequence[C], *, preferred: Sequence[str] | None = None, other_factor: float | None = None,
+) -> list[C]:
+    """`category == "funny"` only, by funny_score x log(1 + views) x speech and language factors."""
+    preferred, other_factor = _language_args(preferred, other_factor)
     funny = [c for c in clips if c.category == "funny"]
-    return sorted(funny, key=lambda c: (-_funny_score(c), c.id))
+    return sorted(funny, key=lambda c: (-_funny_score(c, preferred, other_factor), c.id))
 
 
 def pack_medium(ranked: Sequence[C], spec: FormatSpec) -> list[C] | None:
@@ -154,6 +192,8 @@ def plan_day(
     specs: Sequence[FormatSpec],
     *,
     short_budget_s: float,
+    preferred: Sequence[str] | None = None,
+    other_factor: float | None = None,
 ) -> list[EditionPlan | SkippedEdition]:
     """Plan each format in `specs`, in order. One result per spec.
 
@@ -167,7 +207,8 @@ def plan_day(
     for spec in specs:
         taken = used.setdefault(spec.window, set())
         pool = [c for c in clips if c.id not in taken]
-        ranked = rank_top(pool) if spec.ranking == "top" else rank_funny(pool)
+        rank = rank_top if spec.ranking == "top" else rank_funny
+        ranked = rank(pool, preferred=preferred, other_factor=other_factor)
         result = _plan_one(ranked, spec, short_budget_s)
         if isinstance(result, EditionPlan):
             taken.update(item.clip_id for item in result.items)

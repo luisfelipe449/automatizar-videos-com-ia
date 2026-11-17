@@ -85,6 +85,9 @@ funcionam sem entender a fala (`needs_speech=false`).
 4. **Seleção**:
    - Top Clips: ordena por views; a classificação só desempata.
    - Funny: só `category=funny`, ordena por `funny_score × log(1+views)`.
+   - Idioma: os dois rankings multiplicam a nota por 0,5 quando o clip não é
+     em inglês nem português (idioma da live), então um clip em espanhol
+     precisa do dobro para passar à frente. Idiomas e fator são configuráveis.
    - Top Clips e Funny não repetem clip no mesmo dia.
    - Semanais: mesmo critério sobre 7 dias; reaproveitar clips dos diários é
      permitido.

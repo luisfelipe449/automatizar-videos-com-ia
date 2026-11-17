@@ -126,6 +126,16 @@ CLIPS_GAME_NAME: str = os.getenv("CLIPS_GAME_NAME", "Grand Theft Auto VI").strip
 # the classifier is the only per-clip cost, so this is the budget knob.
 CLIPS_MIN_VIEWS: int = int(os.getenv("CLIPS_MIN_VIEWS", "50"))
 CLIPS_MAX_CANDIDATES: int = int(os.getenv("CLIPS_MAX_CANDIDATES", "60"))
+# The channels speak these languages (ISO 639-1, from the stream's language).
+# Clips in any other language rank with their score times the factor: at 0.5
+# a Spanish clip needs twice the views of an English one to place above it.
+# 1.0 turns the preference off.
+CLIPS_PREFERRED_LANGUAGES: tuple[str, ...] = tuple(
+    lang.strip().lower()
+    for lang in os.getenv("CLIPS_PREFERRED_LANGUAGES", "en,pt").split(",")
+    if lang.strip()
+)
+CLIPS_OTHER_LANGUAGE_FACTOR: float = float(os.getenv("CLIPS_OTHER_LANGUAGE_FACTOR", "0.5"))
 # Gemini models tried in order for each clip; an overloaded (503/504) model
 # hands the clip to the next. Lite comes last: cheaper and less contended,
 # but a weaker judge of humour.

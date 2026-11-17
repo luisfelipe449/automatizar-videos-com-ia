@@ -10,6 +10,7 @@ from app.clips.formats import FORMATS, FormatSpec
 from app.clips.select import (
     EditionPlan,
     SkippedEdition,
+    language_factor,
     pack_medium,
     pick_short,
     plan_day,
@@ -31,6 +32,7 @@ class FakeClip:
     funny_score: float | None = 5.0
     hype_score: float | None = 5.0
     needs_speech: bool | None = False
+    language: str | None = "en"
 
 
 def _clips(n: int, start_id: int = 1, **kw) -> list[FakeClip]:
@@ -299,3 +301,67 @@ def test_edition_plan_rank_one_clip_helper():
     top, = plan_day(_clips(10), [TOP], short_budget_s=BUDGET)
     assert top.short is not None and top.short.rank == 1
     assert math.isclose(top.total_s, sum(30.0 for _ in top.items))
+
+
+# --------------------------------------------------------------------------- #
+# Language preference
+# --------------------------------------------------------------------------- #
+
+PREFERRED = ("en", "pt")
+
+
+@pytest.mark.parametrize("language, expected", [
+    ("en", 1.0), ("pt", 1.0), ("pt-br", 1.0), ("EN-GB", 1.0),
+    ("es", 0.5), ("ja", 0.5), ("other", 0.5),
+    (None, 1.0), ("", 1.0),
+])
+def test_language_factor(language, expected):
+    assert language_factor(language, preferred=PREFERRED, other_factor=0.5) == expected
+
+
+def test_rank_top_prefers_en_and_pt():
+    clips = [
+        FakeClip(1, view_count=1000, language="es"),  # competes as 500
+        FakeClip(2, view_count=600, language="en"),
+        FakeClip(3, view_count=550, language="pt"),
+        FakeClip(4, view_count=400, language="ja"),   # competes as 200
+    ]
+    ranked = rank_top(clips, preferred=PREFERRED, other_factor=0.5)
+    assert [c.id for c in ranked] == [2, 3, 1, 4]
+
+
+def test_rank_top_other_language_still_wins_with_enough_views():
+    clips = [FakeClip(1, view_count=2000, language="es"), FakeClip(2, view_count=900, language="en")]
+    assert [c.id for c in rank_top(clips, preferred=PREFERRED, other_factor=0.5)] == [1, 2]
+
+
+def test_rank_top_factor_one_means_views_only():
+    clips = [FakeClip(1, view_count=1000, language="es"), FakeClip(2, view_count=600, language="en")]
+    assert [c.id for c in rank_top(clips, preferred=PREFERRED, other_factor=1.0)] == [1, 2]
+
+
+def test_rank_funny_applies_language_factor_to_the_whole_score():
+    # Same funny score; 10x the views does not make up for half the score.
+    clips = [
+        FakeClip(1, category="funny", funny_score=8, view_count=10_000, language="es"),
+        FakeClip(2, category="funny", funny_score=8, view_count=1_000, language="pt"),
+    ]
+    ranked = rank_funny(clips, preferred=PREFERRED, other_factor=0.5)
+    assert [c.id for c in ranked] == [2, 1]
+
+
+def test_rankings_default_to_configured_preference(monkeypatch):
+    clips = [FakeClip(1, view_count=1000, language="es"), FakeClip(2, view_count=600, language="en")]
+    monkeypatch.setattr("app.config.CLIPS_PREFERRED_LANGUAGES", ("en", "pt"))
+    monkeypatch.setattr("app.config.CLIPS_OTHER_LANGUAGE_FACTOR", 0.5)
+    assert [c.id for c in rank_top(clips)] == [2, 1]
+    monkeypatch.setattr("app.config.CLIPS_OTHER_LANGUAGE_FACTOR", 1.0)
+    assert [c.id for c in rank_top(clips)] == [1, 2]
+
+
+def test_plan_day_prefers_en_and_pt_clips():
+    spanish = [FakeClip(id=i, view_count=5000 - i, language="es") for i in range(1, 9)]
+    english = [FakeClip(id=100 + i, view_count=3000 - i, language="en") for i in range(8)]
+    top, = plan_day(spanish + english, [TOP], short_budget_s=BUDGET,
+                    preferred=PREFERRED, other_factor=0.5)
+    assert {i.clip_id for i in top.items} == {c.id for c in english}

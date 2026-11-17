@@ -128,7 +128,8 @@ manual pelo YouTube Studio. Desenho completo:
 
 - **Seleção** (`app/clips/select.py`): Top ordena por views; Funny usa só
   `category=funny`, por `funny_score × log(1+views)`, com peso menor para
-  clip que depende da fala. Top e Funny do mesmo dia não repetem clip. O
+  clip que depende da fala. Nos dois, clip fora dos idiomas preferidos (en e
+  pt) entra com a nota pela metade. Top e Funny do mesmo dia não repetem clip. O
   médio tem 8–12 clips inteiros (3–5 min), em contagem regressiva até o #1;
   o Short é o #1, com o começo cortado se não couber em 59 s junto com o
   outro.
@@ -151,6 +152,7 @@ No `.env` (detalhes em `.env.example`):
 | `CLIPS_GAME_NAME` | Jogo coletado (`Grand Theft Auto VI`; `Grand Theft Auto V` para testes) |
 | `CLIPS_DIR` | Onde ficam clips, outros e edições (vários GB por dia). Vazio = `assets/clips`; ex.: `F:/five-star-clips` |
 | `CLIPS_MIN_VIEWS`, `CLIPS_MAX_CANDIDATES` | Pré-filtro de views e teto de clips por coleta: é o controle de custo da classificação |
+| `CLIPS_PREFERRED_LANGUAGES`, `CLIPS_OTHER_LANGUAGE_FACTOR` | Idiomas preferidos (`en,pt`) e o fator da nota dos demais (`0.5`; `1.0` desliga a preferência) |
 | `CLIPS_CLASSIFIER_MODELS` | Modelos Gemini que assistem cada clip, em ordem |
 | `GEMINI_API_KEY` | Classificação e TTS do CTA. **Com billing ativo, cada clip classificado é cobrado** |
 | `GROQ_API_KEY` | Classificação de reserva, só pelo título |

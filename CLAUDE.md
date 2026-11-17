@@ -341,6 +341,9 @@ Scheduled by WSL cron (`*/30`) through `scripts/run_clips_daily.sh`; see
 - `select.py` is pure and takes any object with the `RankableClip`
   attributes, so ORM `Clip` rows pass straight in. Editions play as a
   countdown: `rank` 1 has the last `position`.
+- Both rankings multiply a clip's score by `select.language_factor`: 1.0 for
+  `CLIPS_PREFERRED_LANGUAGES` (en, pt) or an unknown language, else
+  `CLIPS_OTHER_LANGUAGE_FACTOR` (0.5).
 - `plan_day` excludes clips across formats that share a window (Top and
   Funny of a day), not across windows (weeklies may reuse dailies).
 - An `Edition` already in the database keeps its clips on re-run; approved
