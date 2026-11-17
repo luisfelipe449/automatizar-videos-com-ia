@@ -10,7 +10,7 @@ Output per (profile, aspect), cached by a hash of every input:
   elements need 5-20 s at the end of a video over 25 s.
 - 9x16: 1080x1920, the outro centred over a blurred copy of itself.
 The source's own audio is dropped. The CTA is narrated (Gemini TTS, cached
-by text) 0.8 s in, over the outro music. The CTA text is drawn from a file
+by text and voice) 0.8 s in, over the outro music. The CTA text is drawn from a file
 because drawtext cannot wrap and file contents need no escaping.
 """
 from __future__ import annotations
@@ -194,8 +194,9 @@ def build_outro_args(
 def _synthesize_cta(text: str, key: str, voice: str) -> Path:
     from app.services.tts_service import synthesize_narration
 
-    # synthesize_narration caches by text hash under assets/generated/<job_id>,
-    # so each channel pays for its CTA once per wording.
+    # synthesize_narration caches by text and voice under
+    # assets/generated/<job_id>, so each channel pays for its CTA once per
+    # wording and voice.
     return synthesize_narration(text, f"clips_cta_{key}", voice_name=voice)
 
 

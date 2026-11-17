@@ -29,7 +29,7 @@ from app.models import RenderSpec, Script
 from app.services.caption_service import transcribe
 from app.services.render_service import render_short
 from app.services.script_service import generate_script
-from app.services.tts_service import synthesize_narration
+from app.services.tts_service import narration_cache_key, synthesize_narration
 from app.services.visual_service import generate_all_scene_images
 from app.services.youtube_service import upload_short
 from app.utils import cache, filepaths
@@ -151,7 +151,7 @@ def _stage_captions(script: Script) -> Path:
     return transcribe(
         filepaths.narration_path(script.job_id),
         script.job_id,
-        narration_hash=cache.hash_text(script.narration),
+        narration_hash=narration_cache_key(script.narration),
     )
 
 
@@ -197,19 +197,19 @@ def _stage_upload(script: Script, video_path: Path, category: int | None = None)
 def _tts_fresh(script: Script) -> Path | None:
     wav = filepaths.narration_path(script.job_id)
     hsh = filepaths.narration_hash_path(script.job_id)
-    return wav if cache.artifact_fresh(wav, hsh, cache.hash_text(script.narration)) else None
+    return wav if cache.artifact_fresh(wav, hsh, narration_cache_key(script.narration)) else None
 
 
 def _captions_fresh(script: Script) -> Path | None:
-    """Captions are fresh iff the sibling hash matches `hash_text(narration)`.
+    """Captions are fresh iff the sibling hash matches the narration's cache key.
 
     Protects against stale captions left behind from a previous narration: if
-    the narration text changes, tts_service regenerates the WAV and the
-    captions' hash mismatches, forcing a retranscribe.
+    the narration text or the voice changes, tts_service regenerates the WAV
+    and the captions' hash mismatches, forcing a retranscribe.
     """
     cp = filepaths.captions_path(script.job_id)
     hp = filepaths.captions_hash_path(script.job_id)
-    expected = cache.hash_text(script.narration)
+    expected = narration_cache_key(script.narration)
     return cp if cache.artifact_fresh(cp, hp, expected) else None
 
 

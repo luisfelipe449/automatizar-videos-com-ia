@@ -3,11 +3,12 @@
 Single responsibility: take narration text + job_id, call Gemini TTS, write a
 16-bit 24kHz mono WAV to `filepaths.narration_path(job_id)`. Skips the API
 call entirely when the existing artifact + sibling hash file say the input
-hasn't changed.
+(text and voice, `narration_cache_key`) hasn't changed.
 """
 
 from __future__ import annotations
 
+import json
 import wave
 from pathlib import Path
 
@@ -133,6 +134,17 @@ def _validate_wav(wav_path: Path) -> None:
         )
 
 
+def narration_cache_key(narration: str, voice_name: str | None = None) -> str:
+    """Cache key of a narration WAV: the text and the voice that speaks it.
+
+    `voice_name` resolves like `synthesize_narration`'s (default
+    `config.TTS_VOICE`). The orchestrator keys the captions on the same value,
+    since a new voice changes the word timings.
+    """
+    voice = voice_name or TTS_VOICE
+    return cache.hash_text(json.dumps({"text": narration, "voice": voice}, sort_keys=True))
+
+
 def synthesize_narration(
     narration: str, job_id: str, *, voice_name: str | None = None
 ) -> Path:
@@ -142,20 +154,22 @@ def synthesize_narration(
     explicitly only to override the configured voice for one call.
 
     Returns the absolute path to the WAV. If an existing WAV's hash matches
-    `hash_text(narration)`, returns the existing path without re-calling the API.
+    `narration_cache_key(narration, voice_name)`, returns the existing path
+    without re-calling the API, so changing the text or the voice re-synthesizes.
     Raises TTSError on unrecoverable API failure.
     """
     filepaths.ensure_job_dirs(job_id)
     wav_path = filepaths.narration_path(job_id)
     hash_path = filepaths.narration_hash_path(job_id)
 
-    expected = cache.hash_text(narration)
+    voice = voice_name or TTS_VOICE
+    expected = narration_cache_key(narration, voice)
     if cache.artifact_fresh(wav_path, hash_path, expected):
         print(f"{_LOG_PREFIX} cache hit {wav_path}")
         return wav_path
 
     client = genai.Client(api_key=require("GEMINI_API_KEY"))
-    pcm_bytes = _call_gemini_tts(client, narration, voice_name or TTS_VOICE)
+    pcm_bytes = _call_gemini_tts(client, narration, voice)
 
     _write_wav(pcm_bytes, wav_path)
     _validate_wav(wav_path)

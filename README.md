@@ -320,7 +320,7 @@ Para cada canal do YouTube que você gerencia:
 
 ## Idempotência
 
-Cada etapa cacheia por hash do input (texto da narração, prompt de imagem) ou mtime (render). Rodar duas vezes o mesmo prompt com o mesmo `job_id` é no-op até o upload (que também é pulado se `upload.json` já tiver `video_id`). Para forçar refazer uma etapa, apague o artefato (e o `.hash`) correspondente.
+Cada etapa cacheia por hash do input (texto e voz da narração, prompt de imagem) ou mtime (render). Rodar duas vezes o mesmo prompt com o mesmo `job_id` é no-op até o upload (que também é pulado se `upload.json` já tiver `video_id`). Para forçar refazer uma etapa, apague o artefato (e o `.hash`) correspondente.
 
 ## Testes
 

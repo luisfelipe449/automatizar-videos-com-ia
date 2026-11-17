@@ -156,8 +156,8 @@ pytest -v tests/test_models.py::test_script_validation
 
 Every pipeline stage is idempotent - artifacts are cached by hash of their input:
 - Script: cached by prompt hash
-- TTS: cached by narration text hash
-- Captions: cached by narration text hash (protects against stale captions)
+- TTS: cached by hash of narration text + voice (`tts_service.narration_cache_key`)
+- Captions: cached by the same key (protects against stale captions after a text or voice change)
 - Visuals: cached per scene by `image_prompt` hash
 - Render: cached by mtime comparison (final.mp4 vs all inputs)
 - Upload: cached by presence of `upload.json` with `video_id`

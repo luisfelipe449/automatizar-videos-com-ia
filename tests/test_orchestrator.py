@@ -16,7 +16,7 @@ import pytest
 
 from app import orchestrator
 from app.models import Scene, Script
-from app.services.tts_service import TTSError
+from app.services.tts_service import TTSError, narration_cache_key
 from app.services.visual_service import VisualGenerationError
 from app.utils import cache, filepaths
 
@@ -84,7 +84,7 @@ def mocked_services(monkeypatch, redirected_dirs: Path):
         filepaths.ensure_job_dirs(job_id)
         wav = filepaths.narration_path(job_id)
         wav.write_bytes(b"RIFFfakewavdata")
-        cache.write_hash_file(filepaths.narration_hash_path(job_id), cache.hash_text(narration))
+        cache.write_hash_file(filepaths.narration_hash_path(job_id), narration_cache_key(narration))
         return wav
 
     def fake_transcribe(
@@ -210,6 +210,20 @@ def test_resume_from_script(mocked_services, redirected_dirs):
     assert mocked_services["captions"] == 1
     assert mocked_services["clips"] == 1
     assert mocked_services["render"] == 1
+
+
+def test_voice_change_reruns_tts_and_captions(monkeypatch, mocked_services, redirected_dirs):
+    """Same narration, new voice: the WAV and its caption timings are stale."""
+    monkeypatch.setattr("app.services.tts_service.TTS_VOICE", "Kore")
+    orchestrator.run_pipeline("prompt voz", job_id="job-voice", skip_upload=True)
+
+    monkeypatch.setattr("app.services.tts_service.TTS_VOICE", "Charon")
+    result = orchestrator.run_pipeline("prompt voz", job_id="job-voice", skip_upload=True)
+
+    assert result["success"] is True
+    assert mocked_services["tts"] == 2
+    assert mocked_services["captions"] == 2
+    assert mocked_services["clips"] == 1
 
 
 def test_failure_mid_pipeline(monkeypatch, mocked_services, redirected_dirs):

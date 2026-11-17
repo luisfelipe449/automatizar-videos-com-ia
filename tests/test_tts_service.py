@@ -271,6 +271,34 @@ def test_explicit_voice_name_overrides_configured_default(monkeypatch, patched_e
     assert _voice_sent_to_api() == "Kore"
 
 
+def test_voice_change_invalidates_cache(monkeypatch, patched_env):
+    """Same text in another voice is another narration, not a cache hit."""
+    _stub_probe_duration(monkeypatch)
+    from app.services.tts_service import synthesize_narration
+
+    _install_fake_client(monkeypatch, [_ONE_SECOND_SILENCE_PCM] * 3)
+
+    synthesize_narration("olá mundo", job_id="job-voice-cache", voice_name="Kore")
+    synthesize_narration("olá mundo", job_id="job-voice-cache", voice_name="Charon")
+    synthesize_narration("olá mundo", job_id="job-voice-cache", voice_name="Charon")
+
+    assert len(FakeClient.calls) == 2
+
+
+def test_configured_voice_change_invalidates_cache(monkeypatch, patched_env):
+    _stub_probe_duration(monkeypatch)
+    from app.services.tts_service import synthesize_narration
+
+    _install_fake_client(monkeypatch, [_ONE_SECOND_SILENCE_PCM] * 2)
+
+    monkeypatch.setattr("app.services.tts_service.TTS_VOICE", "Kore")
+    synthesize_narration("olá mundo", job_id="job-voice-env")
+    monkeypatch.setattr("app.services.tts_service.TTS_VOICE", "Charon")
+    synthesize_narration("olá mundo", job_id="job-voice-env")
+
+    assert len(FakeClient.calls) == 2
+
+
 # --------------------------------------------------------------------------- #
 # Narration length guard
 #
