@@ -65,7 +65,16 @@ def format_report(report: DailyReport, clip_names: dict[int, str]) -> str:
     return "\n".join(lines)
 
 
+def _utf8_output() -> None:
+    # Windows Python writes cp1252 to a redirected stdout (cron logs), and a
+    # streamer name in Cyrillic or CJK would raise UnicodeEncodeError.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_output()
     args = _parser().parse_args(argv)
     day = args.date or _today_brt()
     specs = [FORMATS[key] for key in args.formats] if args.formats else None
