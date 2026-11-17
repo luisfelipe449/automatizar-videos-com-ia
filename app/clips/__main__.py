@@ -9,7 +9,8 @@ before launch day, when no format is due yet. `--dry-run` stops after
 planning and prints the selection; harvest, download and classification
 still run and are stored. A dry run renders nothing, outros included: the
 Short budget comes from 9:16 outros already on disk, else an estimate, and
-the report says which. Classification calls Gemini, which is billed;
+the report says which. Classification calls Gemini (free-tier quota, or
+billed usage once billing is on);
 `--skip-classify` plans from views alone (Funny then finds no candidates).
 
 The database schema is upgraded in place (`app.db.migrations`) before the

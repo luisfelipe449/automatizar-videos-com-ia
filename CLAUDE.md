@@ -363,14 +363,17 @@ Scheduled by WSL cron (`*/30`) through `scripts/run_clips_daily.sh`; see
   duration − trim) and seeks to `probed − kept`, because the file can run a
   few hundredths longer than Twitch reports. The budget is computed only when
   a format with a Short needs a fresh plan; a dry run never renders an outro
-  (TTS is billed) and uses the 9:16 outro on disk or
+  (TTS calls Gemini) and uses the 9:16 outro on disk or
   `pipeline.DRY_RUN_OUTRO_ESTIMATE_S`, reported in `short_budget_source`.
 - Medium chapters follow YouTube's rules (`metadata.build_chapters`): first
   at 0:00, at least 3, each at least 10 s, or none are shown.
 
 **Pitfalls**:
-- **Gemini billing is on.** Classification and the CTA TTS cost money. Tests
-  mock every external call; announce before any live call.
+- **Live Gemini calls spend the key's quota, or money once billing is on.**
+  On the free tier, per-minute and per-day limits apply: a per-minute 429
+  moves the clip to the next model, a per-day one sends the rest of the run
+  to Groq (title only). Tests mock every external call; announce before any
+  live call.
 - The venv is Windows Python called from WSL. Shell variables reach it only
   when listed in `WSLENV` (`WSLENV=CLIPS_GAME_NAME CLIPS_GAME_NAME=... python.exe ...`).
 - Windows Python writes cp1252 to a redirected stdout; `app/clips/__main__.py`

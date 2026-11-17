@@ -11,7 +11,7 @@ O cron chama o script a cada 30 minutos. O script decide se roda:
 |---|---|
 | Não antes das 08h de Brasília | `TZ=America/Sao_Paulo` dentro do script; o fuso do WSL (aqui `America/Cuiaba`, −04) não importa |
 | Uma vez por dia | execução bem-sucedida grava `data/clips-cron/<dia>.done` |
-| No máximo 4 tentativas com falha por dia | `data/clips-cron/<dia>.attempts`; muda com `CLIPS_CRON_MAX_ATTEMPTS`. Cada tentativa pode classificar clips novos na Gemini, que é cobrada |
+| No máximo 4 tentativas com falha por dia | `data/clips-cron/<dia>.attempts`; muda com `CLIPS_CRON_MAX_ATTEMPTS`. Cada tentativa pode classificar clips novos na Gemini, gastando a cota gratuita ou, com faturamento ativo, dinheiro |
 | Nunca duas ao mesmo tempo | `flock` em `data/clips-cron/lock` |
 | Dia perdido é recuperado | se o WSL estava desligado às 08h, roda no primeiro tique depois que ele ligar, enquanto ainda for o mesmo dia em Brasília |
 

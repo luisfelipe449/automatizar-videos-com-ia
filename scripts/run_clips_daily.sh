@@ -6,7 +6,7 @@
 # - not before 08:00 in Sao Paulo, whatever the WSL clock's zone is;
 # - once per day: a successful run leaves <state>/<day>.done;
 # - at most CLIPS_CRON_MAX_ATTEMPTS failed tries per day (default 4), so a
-#   persistent failure stops calling the billed classifier;
+#   persistent failure stops spending Gemini quota (or money) on the classifier;
 # - never two at once (flock on <state>/lock).
 # A day missed because WSL was not running is caught up on the first tick
 # after it starts, as long as it is still the same day in Sao Paulo.
