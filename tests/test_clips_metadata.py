@@ -101,12 +101,30 @@ def test_chapters_start_at_zero_and_shift_by_title_card():
     ]
 
 
-def test_chapter_under_ten_seconds_absorbs_the_next_clip():
-    # #3 lasts 6 s, so the #2 marker is dropped and "#3" covers both clips.
-    # YouTube disables every chapter when any one is under 10 s.
+def test_clip_under_ten_seconds_joins_the_previous_chapter():
+    # #3 lasts 6 s, so it has no marker and plays inside "#4"; #2 keeps its
+    # own. YouTube disables every chapter when any one is under 10 s.
     offsets = [0.0, 30.0, 36.0, 70.0]
     assert build_chapters(offsets, [4, 3, 2, 1], lead_in_s=1.5) == [
-        "0:00 #4", "0:31 #3", "1:11 #1",
+        "0:00 #4", "0:37 #2", "1:11 #1",
+    ]
+
+
+def test_short_clip_does_not_take_the_next_clips_chapter():
+    # Real Top edition: #7 lasts 9.9 s and sits between #8 and #6 (35 s).
+    offsets = [0.0, 21.767, 31.367, 66.167, 93.835, 149.302, 209.012, 235.645]
+    ranks = [8, 7, 6, 5, 4, 3, 2, 1]
+    assert build_chapters(offsets, ranks, lead_in_s=1.5) == [
+        "0:00 #8", "0:32 #6", "1:07 #5", "1:35 #4", "2:30 #3", "3:30 #2", "3:57 #1",
+    ]
+
+
+def test_short_first_clip_shares_the_opening_chapter():
+    # The first chapter must start at 0:00, so a short first clip keeps it and
+    # the next clip's marker is the one dropped.
+    offsets = [0.0, 5.0, 40.0, 80.0]
+    assert build_chapters(offsets, [4, 3, 2, 1], lead_in_s=1.5) == [
+        "0:00 #4", "0:41 #2", "1:21 #1",
     ]
 
 

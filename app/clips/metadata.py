@@ -61,15 +61,22 @@ def build_chapters(offsets: Sequence[float], ranks: Sequence[int], *, lead_in_s:
 
     `offsets` are clip starts in the base video and `lead_in_s` is what plays
     before it (the title card). The title card joins the first chapter, which
-    YouTube requires at 0:00. A clip starting under 10 s after the last kept
-    chapter gets no marker of its own.
+    YouTube requires at 0:00. A clip that plays under 10 s before the next
+    one starts has no marker and plays inside the previous chapter; so does a
+    clip starting under 10 s after the last marker (only possible right after
+    a short first clip, which keeps 0:00). The last clip is followed by the
+    outro, so its chapter always lasts long enough.
     """
+    starts = [0.0] + [offset + lead_in_s for offset in offsets[1:]]
     lines: list[str] = []
     last_start = None
-    for offset, rank in zip(offsets, ranks):
-        start = 0.0 if last_start is None else offset + lead_in_s
-        if last_start is not None and start - last_start < _MIN_CHAPTER_S:
-            continue
+    for i, (start, rank) in enumerate(zip(starts, ranks)):
+        if last_start is not None:
+            next_start = starts[i + 1] if i + 1 < len(starts) else None
+            if next_start is not None and next_start - start < _MIN_CHAPTER_S:
+                continue
+            if start - last_start < _MIN_CHAPTER_S:
+                continue
         lines.append(f"{format_timestamp(start)} #{rank}")
         last_start = start
     return lines if len(lines) >= _MIN_CHAPTERS else []
