@@ -10,7 +10,8 @@ planning and prints the selection; harvest, download and classification
 still run and are stored. Classification calls Gemini, which is billed;
 `--skip-classify` plans from views alone (Funny then finds no candidates).
 
-Exit status is 0 when every stage and edition succeeded, else 1.
+The database schema is upgraded in place (`app.db.migrations`) before the
+run. Exit status is 0 when every stage and edition succeeded, else 1.
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from zoneinfo import ZoneInfo
 from app.clips.formats import FORMATS
 from app.clips.pipeline import DailyReport, run_daily
 from app.db.database import get_session
+from app.db.migrations import upgrade_schema
 
 
 def _today_brt() -> date:
@@ -78,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     day = args.date or _today_brt()
     specs = [FORMATS[key] for key in args.formats] if args.formats else None
+    # A database created by an older version lacks the clips tables/columns.
+    upgrade_schema()
     with get_session() as session:
         report = run_daily(
             session, day, specs=specs, dry_run=args.dry_run,

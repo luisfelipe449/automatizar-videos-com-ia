@@ -376,12 +376,35 @@ def test_cli_forces_formats_and_dry_run(monkeypatch, session, tmp_path):
 
     monkeypatch.setattr(cli, "run_daily", fake_run)
     monkeypatch.setattr(cli, "get_session", lambda: Ctx())
+    monkeypatch.setattr(cli, "upgrade_schema", lambda: [])
     code = cli.main(["daily", "--date", "2026-11-18", "--dry-run",
                      "--format", "top_daily", "--format", "funny_daily", "--skip-classify"])
     assert code == 0
     assert seen["day"] == date(2026, 11, 18)
     assert [s.key for s in seen["specs"]] == ["top_daily", "funny_daily"]
     assert seen["dry_run"] and seen["skip_classify"] and not seen["skip_harvest"]
+
+
+def test_cli_upgrades_the_schema_before_opening_a_session(monkeypatch, session):
+    events = []
+
+    class Ctx:
+        def __enter__(self):
+            events.append("session")
+            return session
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_run(sess, day, **kw):
+        from app.clips.pipeline import DailyReport
+        return DailyReport(day=day, window_end=END)
+
+    monkeypatch.setattr(cli, "upgrade_schema", lambda: events.append("upgrade") or [])
+    monkeypatch.setattr(cli, "get_session", lambda: Ctx())
+    monkeypatch.setattr(cli, "run_daily", fake_run)
+    assert cli.main(["daily", "--date", "2026-11-18", "--dry-run"]) == 0
+    assert events == ["upgrade", "session"]
 
 
 def test_cli_rejects_unknown_format():
