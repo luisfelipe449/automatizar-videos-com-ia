@@ -25,8 +25,10 @@ from app.clips.store import upsert_clips
 from app.db.database import Base, get_engine, get_session
 from app.db.models import Clip, Edition
 
-DAY = date(2026, 11, 19)
-END = datetime(2026, 11, 19, 11, 0, tzinfo=timezone.utc)  # 08:00 BRT
+# A regular day; the first edition (19/11) also reaches back to the game's
+# release and has its own tests.
+DAY = date(2026, 11, 20)
+END = datetime(2026, 11, 20, 11, 0, tzinfo=timezone.utc)  # 08:00 BRT
 TOP, FUNNY = FORMATS["top_daily"], FORMATS["funny_daily"]
 EN = load_profile("five-star-clips")
 BR = load_profile("five-star-clips-br")
@@ -41,8 +43,10 @@ def session(tmp_path):
         yield s
 
 
-def _candidates(n_top: int = 12, n_funny: int = 10, *, hours_ago: float = 10) -> list[CandidateClip]:
-    made = END - timedelta(hours=hours_ago)
+def _candidates(
+    n_top: int = 12, n_funny: int = 10, *, hours_ago: float = 10, ref: datetime | None = None,
+) -> list[CandidateClip]:
+    made = (ref or END) - timedelta(hours=hours_ago)
     out = []
     for i in range(n_top + n_funny):
         out.append(CandidateClip(
@@ -538,3 +542,43 @@ def test_report_lists_the_selection(session, tmp_path):
     assert "top_daily: planned" in text
     assert "#1  clip" in text and "streamer0" in text and "[Short" in text
     assert "Short clip budget" in text and "estimate" in text
+
+
+# --------------------------------------------------------------------------- #
+# First edition: reaches back to the game's release
+# --------------------------------------------------------------------------- #
+
+FIRST_DAY = date(2026, 11, 19)
+FIRST_END = datetime(2026, 11, 19, 11, 0, tzinfo=timezone.utc)  # 08:00 BRT
+RELEASE = datetime(2026, 11, 18, 3, 0, tzinfo=timezone.utc)      # 00:00 BRT
+
+
+def _run_first_day(h: Harness, session, **kw):
+    deps = replace(h.deps(), now=lambda: FIRST_END + timedelta(hours=1))
+    kw.setdefault("specs", [TOP, FUNNY])
+    kw.setdefault("profiles", [EN, BR])
+    return run_daily(session, FIRST_DAY, editions_dir=h.tmp / "editions", deps=deps, **kw)
+
+
+def test_first_edition_window_starts_at_release(session, tmp_path):
+    h = Harness(tmp_path)
+    _run_first_day(h, session, dry_run=True)
+    mature = FIRST_END - timedelta(hours=6)
+    assert h.source.windows == [(RELEASE, mature)]
+
+
+def test_first_edition_includes_launch_night_clips(session, tmp_path):
+    # Created 00:30 BRT on release night: 31.5 h before the 08:00 cutoff,
+    # outside a plain 30 h window but inside the first edition's.
+    launch_night = FIRST_END - (RELEASE + timedelta(minutes=30))
+    hours_ago = launch_night.total_seconds() / 3600
+    h = Harness(tmp_path, candidates=_candidates(hours_ago=hours_ago, ref=FIRST_END))
+    report = _run_first_day(h, session, dry_run=True)
+    assert {r.format_key: r.outcome for r in report.editions}["top_daily"] == "planned"
+
+
+def test_clips_from_before_the_release_stay_out(session, tmp_path):
+    before = FIRST_END - (RELEASE - timedelta(hours=1))
+    h = Harness(tmp_path, candidates=_candidates(hours_ago=before.total_seconds() / 3600, ref=FIRST_END))
+    report = _run_first_day(h, session, dry_run=True)
+    assert all(r.outcome == "skipped" for r in report.editions)

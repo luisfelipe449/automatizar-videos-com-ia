@@ -321,8 +321,9 @@ guide (pt-BR): README "Modo Clips".
 **Flow** (`app/clips/pipeline.py:run_daily`): harvest each format window
 ending `CLIPS_MATURITY_HOURS` (6 h) before the 08:00 Sao Paulo cutoff, so
 the daily draws on clips created 30 h to 6 h before it and every clip has
-had 6 h to collect views; weekly days also fetch the 7 days ending there
-(`sources/twitch.py`, one fetch per window) → `store.upsert_clips` → `download.ensure_downloaded`
+had 6 h to collect views; weekly days also fetch the 7 days ending there;
+a format's first edition stretches its window back to `GAME_RELEASE_AT`
+(`FormatSpec.window_for`) (`sources/twitch.py`, one fetch per window) → `store.upsert_clips` → `download.ensure_downloaded`
 (yt-dlp + 480p proxy) → `classify.Classifier` (Gemini watches the proxy;
 Groq judges the title when Gemini fails) → `select.plan_day` → `render.render_base`
 (language-neutral) → per channel profile `outro.render_outro` + `render.render_language`

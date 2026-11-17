@@ -130,7 +130,10 @@ manual pelo YouTube Studio. Desenho completo:
   08h de Brasília. As 6 h de folga (`CLIPS_MATURITY_HOURS`) dão tempo para
   o clip juntar views antes do filtro e do ranking; os mais novos entram no
   dia seguinte. Nos dias de semanal, a coleta também busca os 7 dias que
-  terminam no mesmo ponto, para atualizar as views.
+  terminam no mesmo ponto, para atualizar as views. A primeira edição de
+  cada formato estende a janela até o lançamento do jogo (18/11 00h,
+  `GAME_RELEASE_AT` em `app/clips/formats.py`), para os clips da noite de
+  lançamento entrarem.
 
 - **Seleção** (`app/clips/select.py`): Top ordena por views; Funny usa só
   `category=funny`, por `funny_score × log(1+views)`, com peso menor para

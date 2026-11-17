@@ -6,8 +6,9 @@ per channel live in the channel profile (`app.clips.profiles`).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 # A Short over one minute with any active Content ID claim is blocked
 # worldwide; under one minute nothing changes. GTA radio music draws claims,
@@ -15,6 +16,9 @@ from typing import Literal
 SHORT_MAX_S = 59
 
 Ranking = Literal["top", "funny"]
+
+# GTA VI's release; no clip of the game exists before it.
+GAME_RELEASE_AT = datetime(2026, 11, 18, 0, 0, tzinfo=ZoneInfo("America/Sao_Paulo"))
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,20 @@ class FormatSpec:
     has_short: bool
     starts_on: date
     weekday: int | None = None
+
+    def window_for(self, day: date, pool_end: datetime) -> timedelta:
+        """How far back from `pool_end` the edition of `day` draws clips.
+
+        The format's `window`, except on its first edition (no earlier edition
+        of it is due on or after `starts_on`): that one reaches back to
+        `GAME_RELEASE_AT`, so the clips from the release until the regular
+        window starts are not left out of every edition. Never shorter than
+        `window`.
+        """
+        period = timedelta(days=7) if self.weekday is not None else timedelta(days=1)
+        if day - period >= self.starts_on:
+            return self.window
+        return max(self.window, pool_end - GAME_RELEASE_AT)
 
     def is_due(self, day: date) -> bool:
         if day < self.starts_on:

@@ -17,7 +17,8 @@ has collected views for at least 6 h when the view filter and the ranking
 see it, and younger clips wait for the next day. Each distinct format
 window is fetched ending at `pool_end`: the day every day, and the 7 days as
 well when a weekly format runs, so the weekly ranking sees refreshed view
-counts. Each format selects only from its own window. Clip times are stored
+counts. A format's first edition stretches its window back to the game's
+release (`FormatSpec.window_for`), so launch-night clips are not lost. Each format selects only from its own window. Clip times are stored
 in UTC without an offset, so every window bound is converted to UTC before
 it reaches a query.
 """
@@ -305,10 +306,12 @@ def _harvest(
         print(f"{_LOG_PREFIX} harvested {len(candidates)} clips (new, updated) = {report.harvested}")
 
 
-def _group_by_window(specs: Sequence[FormatSpec]) -> dict[timedelta, list[FormatSpec]]:
+def _group_by_window(
+    specs: Sequence[FormatSpec], windows: dict[str, timedelta],
+) -> dict[timedelta, list[FormatSpec]]:
     groups: dict[timedelta, list[FormatSpec]] = {}
     for spec in specs:
-        groups.setdefault(spec.window, []).append(spec)
+        groups.setdefault(windows[spec.key], []).append(spec)
     return groups
 
 
@@ -331,14 +334,16 @@ def run_daily(
     cutoff = window_end(day, deps.now())
     pool_end = cutoff - timedelta(hours=config.CLIPS_MATURITY_HOURS)
     report = DailyReport(day=day, window_end=cutoff, pool_end=pool_end)
+    # Effective window per format: the first edition reaches back to the release.
+    windows = {spec.key: spec.window_for(day, pool_end) for spec in specs}
     if not specs:
         print(f"{_LOG_PREFIX} no format due on {day}")
         return report
 
     if not skip_harvest:
-        _harvest(session, pool_end, {spec.window for spec in specs}, deps, report)
+        _harvest(session, pool_end, set(windows.values()), deps, report)
 
-    widest = max(spec.window for spec in specs)
+    widest = max(windows.values())
     ready = deps.download(session, _clips_in_window(session, pool_end, widest))
     report.downloaded = len(ready)
 
@@ -358,7 +363,7 @@ def run_daily(
 
     ready_ids = {clip.id for clip in ready}
     to_render: list[tuple[Edition, EditionPlan]] = []
-    for window, group in _group_by_window(specs).items():
+    for window, group in _group_by_window(specs, windows).items():
         taken: set[int] = set()
         fresh: list[FormatSpec] = []
         for spec in group:

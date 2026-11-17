@@ -203,3 +203,49 @@ def test_short_cap_stays_under_content_id_block_threshold():
 ])
 def test_formats_due_on(day, expected):
     assert {spec.key for spec in formats_due_on(day)} == expected
+
+
+# --------------------------------------------------------------------------- #
+# Format windows: the first edition reaches back to the game's release
+# --------------------------------------------------------------------------- #
+
+from app.clips.formats import GAME_RELEASE_AT  # noqa: E402
+
+
+def _pool_end(day: date) -> datetime:
+    # 6 h before 08:00 Sao Paulo on `day`.
+    return datetime.combine(day, datetime.min.time(), tzinfo=BRT) + timedelta(hours=2)
+
+
+def test_game_release_is_midnight_18_november_in_brasilia():
+    assert GAME_RELEASE_AT == datetime(2026, 11, 18, 0, 0, tzinfo=BRT)
+
+
+def test_first_daily_edition_window_reaches_the_release():
+    first = date(2026, 11, 19)
+    for key in ("top_daily", "funny_daily"):
+        window = FORMATS[key].window_for(first, _pool_end(first))
+        assert _pool_end(first) - window == GAME_RELEASE_AT
+        assert window == timedelta(hours=26)
+
+
+def test_later_daily_editions_keep_their_window():
+    day = date(2026, 11, 20)
+    assert FORMATS["top_daily"].window_for(day, _pool_end(day)) == timedelta(hours=24)
+
+
+def test_first_weekly_editions_reach_the_release():
+    for key, first in (("top10_weekly", date(2026, 11, 26)), ("funny_weekly", date(2026, 11, 27))):
+        spec = FORMATS[key]
+        assert _pool_end(first) - spec.window_for(first, _pool_end(first)) == GAME_RELEASE_AT
+
+
+def test_second_weekly_edition_keeps_its_window():
+    second = date(2026, 12, 3)
+    assert FORMATS["top10_weekly"].window_for(second, _pool_end(second)) == timedelta(days=7)
+
+
+def test_window_is_never_shorter_than_the_format_window():
+    # A forced run before the release (dry runs) keeps the plain window.
+    day = date(2026, 11, 17)
+    assert FORMATS["top_daily"].window_for(day, _pool_end(day)) == timedelta(hours=24)
