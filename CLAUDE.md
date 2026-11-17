@@ -20,12 +20,13 @@ The pipeline runs locally, renders with FFmpeg at 1080x1920 (9:16), and supports
 **Execution Modes**:
 1. **CLI Mode** (`app/orchestrator.py`): Direct pipeline execution for single videos
 2. **Dashboard Mode** (`app/web/`): Web UI + background worker for multi-account queue management
+3. **Clips Mode** (`app/clips/`): daily GTA 6 highlight editions from Twitch clips, approved in the dashboard (`/editions`) and uploaded by hand. Independent of the prompt pipeline; see "Clips Mode" below
 
 **Key Components**:
 - `app/orchestrator.py`: Pipeline orchestrator with idempotent stage execution
 - `app/core/`: Job queue, account manager, pipeline runner (bridges queue and orchestrator)
 - `app/services/`: One service per external API (script, TTS, captions, visuals, render, YouTube)
-- `app/db/models.py`: SQLAlchemy models (Account, Job, Upload, QuotaSnapshot)
+- `app/db/models.py`: SQLAlchemy models (Account, Job, Upload, QuotaSnapshot; Clip, Edition, EditionClip for Clips Mode)
 - `app/models.py`: Pydantic schemas - JSON contract between pipeline stages
 - `app/worker.py`: Background job processor for dashboard mode
 - `app/web/`: FastAPI dashboard (routes, templates)
@@ -306,6 +307,61 @@ small. Budget = TPM − prompt tokens (the pt-BR system prompt is ~1300).
 
 These are process-global, so one `.env` drives one language at a time. Running an English and a pt-BR channel simultaneously would require making these per-account (DB column + per-job env), which is not implemented.
 
+## Clips Mode
+
+Spec: `docs/superpowers/specs/2026-11-17-gta6-clips-design.md`. Plan with
+task status: `docs/superpowers/plans/2026-11-17-gta6-clips.md`. User-facing
+guide (pt-BR): README "Modo Clips".
+
+**Flow** (`app/clips/pipeline.py:run_daily`): harvest the 24 h up to 08:00
+Sao Paulo (`sources/twitch.py`) → `store.upsert_clips` → `download.ensure_downloaded`
+(yt-dlp + 480p proxy) → `classify.Classifier` (Gemini watches the proxy;
+Groq judges the title when Gemini fails) → `select.plan_day` → `render.render_base`
+(language-neutral) → per channel profile `outro.render_outro` + `render.render_language`
+→ `metadata.json` per channel → `Edition.status = "rendered"`.
+
+**Commands**:
+
+```bash
+.venv/Scripts/python.exe -m app.clips daily [--date YYYY-MM-DD] [--dry-run] \
+    [--format KEY ...] [--skip-harvest] [--skip-classify]
+.venv/Scripts/python.exe -m pytest tests/test_clips_*.py tests/test_web_routes.py
+```
+
+Scheduled by WSL cron (`*/30`) through `scripts/run_clips_daily.sh`; see
+`scripts/schedule_clips.md`.
+
+**Contracts worth knowing before editing**:
+- `select.py` is pure and takes any object with the `RankableClip`
+  attributes, so ORM `Clip` rows pass straight in. Editions play as a
+  countdown: `rank` 1 has the last `position`.
+- `plan_day` excludes clips across formats that share a window (Top and
+  Funny of a day), not across windows (weeklies may reuse dailies).
+- An `Edition` already in the database keeps its clips on re-run; approved
+  and rejected editions are never re-rendered.
+- `Edition.numbers` maps channel profile key → episode number. Only
+  approved editions count (`metadata.next_number`); numbers are frozen
+  before render because they are drawn into the video.
+- Render outputs are cached by a hash of their inputs (`<file>.hash`). Bump
+  `render._GRAPH_VERSION` / `outro._GRAPH_VERSION` when a filter graph changes.
+- The Short budget is `SHORT_MAX_S` (59) minus the longest 9:16 outro; the
+  Short's clip loses its start, never its end.
+- Medium chapters follow YouTube's rules (`metadata.build_chapters`): first
+  at 0:00, at least 3, each at least 10 s, or none are shown.
+
+**Pitfalls**:
+- **Gemini billing is on.** Classification and the CTA TTS cost money. Tests
+  mock every external call; announce before any live call.
+- The venv is Windows Python called from WSL. Shell variables reach it only
+  when listed in `WSLENV` (`WSLENV=CLIPS_GAME_NAME CLIPS_GAME_NAME=... python.exe ...`).
+- Windows Python writes cp1252 to a redirected stdout; `app/clips/__main__.py`
+  reconfigures it to UTF-8 so Cyrillic or CJK streamer names can be printed.
+- `drawtext` has no font fallback. `fonts.credit_font` switches names Bebas
+  Neue cannot draw (Cyrillic, CJK) to a Windows system font.
+- Clip times are stored in UTC without an offset (SQLite); convert window
+  bounds to UTC before querying.
+- WSL cron fires only while the distro is running.
+
 ## File Structure
 
 ```
@@ -354,9 +410,17 @@ app/
     retries.py                    # Tenacity retry decorators
     ffmpeg_helpers.py             # Subprocess wrappers + error parsing
     quota.py                      # Quota detection (429 → fallback)
+  clips/                          # Clips Mode (see "Clips Mode")
+    __main__.py                   # CLI: python -m app.clips daily
+    pipeline.py                   # run_daily: harvest → ... → render, idempotent
+    sources/twitch.py             # Twitch Helix clips
+    download.py, classify.py      # yt-dlp + proxy; Gemini/Groq verdicts
+    select.py                     # pure ranking and edition packing
+    render.py, outro.py, fonts.py # FFmpeg base pass, language pass, outro
+    metadata.py, profiles.py      # episode numbers, YouTube snippet; channel JSONs
   web/
     main.py                       # FastAPI app
-    routes/                       # dashboard, jobs, accounts, api
+    routes/                       # dashboard, jobs, accounts, api, editions
     templates/                    # Jinja2 HTML
 
 scripts/
