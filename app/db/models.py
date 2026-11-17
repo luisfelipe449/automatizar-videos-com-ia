@@ -165,8 +165,8 @@ class Edition(Base):
     """One episode of a clips format (e.g. Top Clips of the Day, 2026-11-19).
 
     Shared by every channel: the same selection is rendered once per
-    language. `numbers` holds the per-language episode number (#N in the
-    title), frozen when the edition is rendered.
+    language. `numbers` maps a channel profile key to that channel's episode
+    number (#N in the title), frozen before render (`app.clips.metadata`).
     """
 
     __tablename__ = "editions"

@@ -82,13 +82,13 @@ def test_edition_starts_planned_with_no_numbers(engine):
         assert edition.numbers == {}
 
 
-def test_edition_numbers_round_trip_per_language(engine):
+def test_edition_numbers_round_trip_per_channel(engine):
     with get_session(engine) as session:
         edition = Edition(format_key="top_daily", edition_date=date(2026, 11, 19))
-        edition.numbers = {"pt-BR": 3, "en": 4}
+        edition.numbers = {"five-star-clips-br": 3, "five-star-clips": 4}
         session.add(edition)
         session.commit()
-        assert session.query(Edition).one().numbers == {"pt-BR": 3, "en": 4}
+        assert session.query(Edition).one().numbers == {"five-star-clips-br": 3, "five-star-clips": 4}
 
 
 def test_edition_clips_come_back_in_position_order(engine):
