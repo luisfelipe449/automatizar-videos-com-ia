@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from tests.ffmpeg_locator import find_ffmpeg
+from tests.gemini_errors import PER_DAY_429, PER_MINUTE_429
 
 
 # --------------------------------------------------------------------------- #
@@ -321,18 +322,14 @@ def test_narration_exactly_at_budget_is_accepted(monkeypatch, patched_env):
 
 
 # --------------------------------------------------------------------------- #
-# Tests: quota exhaustion is terminal, not transient
+# Tests: a spent daily quota is terminal, per-minute throttling is transient
 #
-# Gemini reports a spent quota as 429 RESOURCE_EXHAUSTED, which looks exactly
-# like rate limiting to `is_retryable_http` — but a daily quota only comes back
-# at the provider's reset, so retrying just burns backoff before failing anyway.
+# Gemini reports both as 429 RESOURCE_EXHAUSTED "You exceeded your current
+# quota"; only the quotaId names the period. A daily quota only comes back at
+# the provider's reset, so retrying it just burns backoff before failing anyway.
 # --------------------------------------------------------------------------- #
 
-_QUOTA_ERROR_MESSAGE = (
-    "429 RESOURCE_EXHAUSTED. {'error': {'code': 429, 'message': "
-    "'You exceeded your current quota', 'status': 'RESOURCE_EXHAUSTED', "
-    "'details': [{'quotaMetric': 'generate_content_free_tier_requests'}]}}"
-)
+_QUOTA_ERROR_MESSAGE = PER_DAY_429
 
 
 def test_quota_error_raises_typed_exception(monkeypatch, patched_env):
@@ -396,6 +393,21 @@ def test_transient_server_error_is_still_retried(monkeypatch, patched_env):
     )
 
     assert synthesize_narration("olá", job_id="job-transient").exists()
+    assert len(FakeClient.calls) == 2
+
+
+def test_per_minute_quota_is_retried(monkeypatch, patched_env):
+    """Per-minute throttling carries the same quota wording as the daily cap."""
+    from app.services.tts_service import synthesize_narration
+
+    _patch_no_backoff(monkeypatch)
+    _stub_probe_duration(monkeypatch)
+    _install_fake_client(
+        monkeypatch,
+        [RuntimeError(PER_MINUTE_429), _ONE_SECOND_SILENCE_PCM],
+    )
+
+    assert synthesize_narration("olá", job_id="job-per-minute").exists()
     assert len(FakeClient.calls) == 2
 
 

@@ -497,9 +497,12 @@ Install via package manager:
 ### Gemini TTS quota exhausted (`TTSQuotaExceeded`)
 - Symptom: the job fails at the `tts` stage with `Gemini TTS quota exhausted: ...`
   and stops after a single attempt.
-- Cause: Gemini is the only narration provider — there is no TTS fallback. A spent
-  daily allowance arrives as a 429 `RESOURCE_EXHAUSTED` with a `quotaMetric`, which
-  `tts_service._is_quota_error` distinguishes from ordinary per-minute throttling.
+- Cause: Gemini is the only narration provider — there is no TTS fallback.
+  Per-minute throttling and a spent daily allowance both arrive as a 429
+  `RESOURCE_EXHAUSTED` saying "You exceeded your current quota"; only the
+  violated `quotaId` names the period (`GenerateRequestsPerDay...` vs
+  `GenerateRequestsPerMinute...`). `utils.quota.is_daily_quota_error` matches
+  `perday` and is shared by `tts_service` and the clips classifier.
   `TTSQuotaExceeded.retryable = False` makes `is_retryable_http` skip the retries:
   the generic predicate matches `"429"` by substring, and a daily quota does not
   come back inside a 1-8s backoff.
@@ -507,8 +510,11 @@ Install via package manager:
   `script.json` and its `.hash` were written before this stage, so the script
   cache-hits and the pipeline resumes at `tts`. In dashboard mode use "retry" on
   the failed job (same `job_id`, same cache).
-- Transient 429s without a quota marker are still retried normally; regression
-  tests in `tests/test_tts_service.py` pin both halves of that split.
+- Per-minute 429s are retried by `default_retry` like any transient error;
+  regression tests in `tests/test_tts_service.py` pin both halves of that split
+  with realistic Gemini messages (`tests/gemini_errors.py`). In the clips
+  classifier a per-minute 429 hands the clip to the next model, and only a
+  per-day one sends the rest of the run to Groq.
 
 ### Pollinations offline + no Imagen fallback
 - Symptom: `VisualGenerationError ... no fallback available`

@@ -1,7 +1,7 @@
 """Clip classifier: what kind of moment a clip is, and how good.
 
 Gemini watches the 480p proxy, sound included, and returns a `ClipVerdict`. When
-Gemini fails for a clip, or its quota runs out for the rest of the run,
+Gemini fails for a clip, or its daily quota runs out for the rest of the run,
 Groq judges from the title alone. A Groq verdict is stored with
 `needs_speech = True` because nothing watched the video, which makes the
 ranking discount it.
@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app import config
 from app.clips.download import proxy_path_for
 from app.db.models import Clip
+from app.utils.quota import is_daily_quota_error
 from app.utils.retries import default_retry
 
 _LOG_PREFIX = "[clips.classify]"
@@ -56,23 +57,20 @@ class ClipVerdict(BaseModel):
 
 
 class ClassifierQuotaExceeded(RuntimeError):
-    """The classifier's allowance is spent; retrying before the reset is pointless."""
+    """The classifier's daily allowance is spent; retrying before the reset is pointless."""
 
     retryable = False
 
 
-_QUOTA_MARKERS = ("resource_exhausted", "quota")
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
-
-def _is_quota_error(exc: BaseException) -> bool:
-    # Same rule as tts_service: a spent allowance and ordinary throttling both
-    # arrive as 429; only the quota one carries these markers.
-    message = str(exc).lower()
-    return any(marker in message for marker in _QUOTA_MARKERS)
-
-
-_OVERLOAD_MARKERS = ("503", "504", "unavailable", "deadline", "timed out", "timeout", "overloaded")
+# Busy rather than broken: worth handing the clip to the next model. A 429
+# that `is_daily_quota_error` rejects is per-minute throttling, which Gemini
+# counts per model.
+_OVERLOAD_MARKERS = (
+    "503", "504", "unavailable", "deadline", "timed out", "timeout", "overloaded",
+    "429", "resource_exhausted",
+)
 
 
 def _is_overload(exc: BaseException) -> bool:
@@ -111,10 +109,10 @@ class TextJudge(Protocol):
 class GeminiJudge:
     """Tries each model in order; moves on when one is overloaded.
 
-    Overload (503/504) and timeouts are common on launch days and clear up
-    on their own, so a busy model hands the clip to the next one instead of
-    retrying it. A spent quota stops the whole chain: it is per key, not per
-    model. `last_model` names the model that produced the last answer.
+    Overload (503/504), timeouts and per-minute throttling (429) are common
+    on launch days and clear up on their own, so a busy model hands the clip
+    to the next one instead of retrying it. A spent daily quota stops the
+    whole chain. `last_model` names the model that produced the last answer.
     """
 
     def __init__(self, api_key: str, models: list[str], *, timeout_s: int = 60) -> None:
@@ -147,7 +145,7 @@ class GeminiJudge:
                     model=model, contents=contents, config=config_,
                 )
             except Exception as exc:  # noqa: BLE001 — classify, then move on or re-raise
-                if _is_quota_error(exc):
+                if is_daily_quota_error(exc):
                     raise ClassifierQuotaExceeded(f"Gemini quota exhausted: {exc}") from exc
                 if not _is_overload(exc):
                     raise

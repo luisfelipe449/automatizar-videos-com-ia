@@ -1,4 +1,4 @@
-"""Per-job in-process flags for visual-provider availability.
+"""Quota detection and per-job in-process flags for visual-provider availability.
 
 In-process state is sufficient because idempotent retries re-check each time —
 a fresh Python run simply rediscovers any quota error on its next call.
@@ -9,6 +9,20 @@ from __future__ import annotations
 _IMAGEN = "imagen"
 _POLLINATIONS = "pollinations"
 _VIDEO = "video"
+
+
+
+def is_daily_quota_error(exc: BaseException) -> bool:
+    """True when `exc` reports a Gemini allowance spent until the daily reset.
+
+    Gemini's per-minute throttling and its daily cap arrive alike: 429
+    RESOURCE_EXHAUSTED, "You exceeded your current quota", a `quotaMetric`.
+    Only the violated `quotaId` names the period
+    (`GenerateRequestsPerDayPerProjectPerModel-FreeTier` vs `...PerMinute...`).
+    A per-minute 429 clears within a minute and must stay retryable.
+    """
+    return "perday" in str(exc).lower()
+
 
 # Keyed by job_id → set of provider names that are known to be unavailable.
 _unavailable: dict[str, set[str]] = {}

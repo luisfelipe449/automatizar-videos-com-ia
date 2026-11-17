@@ -17,6 +17,7 @@ from app.clips.classify import (
 from app.clips.download import proxy_path_for
 from app.db.database import Base, get_engine, get_session
 from app.db.models import Clip
+from tests.gemini_errors import PER_DAY_429, PER_MINUTE_429
 
 
 def _verdict(**overrides) -> str:
@@ -202,11 +203,23 @@ def test_without_groq_a_gemini_failure_just_counts_as_failed(session, tmp_path):
     assert stats == {"gemini": 0, "groq": 0, "failed": 1}
 
 
-def test_quota_marker_detection():
-    from app.clips.classify import _is_quota_error
+def test_only_a_per_day_quota_counts_as_exhausted():
+    from app.utils.quota import is_daily_quota_error
 
-    assert _is_quota_error(RuntimeError("429 RESOURCE_EXHAUSTED quotaMetric generate_content"))
-    assert not _is_quota_error(RuntimeError("429 Too Many Requests"))
+    assert is_daily_quota_error(RuntimeError(PER_DAY_429))
+    assert not is_daily_quota_error(RuntimeError(PER_MINUTE_429))
+    assert not is_daily_quota_error(RuntimeError("429 Too Many Requests"))
+
+
+def test_per_minute_throttling_does_not_end_gemini_for_the_run(session, tmp_path):
+    clips = [_clip(session, tmp_path, cid) for cid in ("a", "b")]
+    judge = _judge({"flash": RuntimeError(PER_MINUTE_429)})
+    classifier = Classifier(judge, FakeGroq([_verdict(), _verdict()]))
+
+    stats = classifier.classify_pending(session, clips)
+
+    assert stats == {"gemini": 0, "groq": 2, "failed": 0}
+    assert judge._client.models.asked == ["flash", "flash"]  # asked again for clip b
 
 
 # --------------------------------------------------------------------------- #
@@ -260,12 +273,19 @@ def test_deadline_exceeded_counts_as_overload():
 
 def test_quota_error_stops_the_chain():
     judge = _judge({
-        "flash": RuntimeError("429 RESOURCE_EXHAUSTED quota"),
+        "flash": RuntimeError(PER_DAY_429),
         "lite": _verdict(),
     })
     with pytest.raises(ClassifierQuotaExceeded):
         judge.judge(b"v", "ctx")
     assert judge._client.models.asked == ["flash"]
+
+
+def test_per_minute_throttled_model_hands_over_to_next():
+    # Per-minute quotas are per model, so the next model still has room.
+    judge = _judge({"flash": RuntimeError(PER_MINUTE_429), "lite": _verdict()})
+    judge.judge(b"v", "ctx")
+    assert judge.last_model == "lite"
 
 
 def test_non_overload_error_is_not_masked_by_next_model():
