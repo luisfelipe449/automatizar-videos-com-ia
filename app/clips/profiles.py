@@ -128,3 +128,9 @@ def load_profile(key: str, *, channels_dir: Path | None = None) -> ChannelProfil
         raise ProfileNotFound(f"channel profile not found: {base / f'{key}.json'}")
     data = json.loads(path.read_text(encoding="utf-8"))
     return ChannelProfile(key=key, **data)
+
+
+def load_all_profiles(*, channels_dir: Path | None = None) -> list[ChannelProfile]:
+    """Every channel profile, sorted by key: the channels each edition renders for."""
+    base = channels_dir or CHANNELS_DIR
+    return [load_profile(path.stem, channels_dir=base) for path in sorted(base.glob("*.json"))]
