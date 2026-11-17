@@ -10,12 +10,16 @@ Editions render into `<editions_dir>/<date>_<format>/`, one subdirectory per
 channel profile key holding `medio.mp4`, `short.mp4`, `thumb.jpg` and
 `metadata.json`. `status.json` records each stage's outcome and time.
 
-The harvest windows end at 08:00 in Sao Paulo on the edition day (or now,
-if earlier). Each distinct format window is fetched: the last 24 h every
-day, and the last 7 days as well when a weekly format runs, so the weekly
-ranking sees refreshed view counts. Each format still selects only from its
-own window. Clip times are stored in UTC without an offset, so every window
-bound is converted to UTC before it reaches a query.
+The cutoff is 08:00 in Sao Paulo on the edition day (or now, if earlier).
+Every window ends `CLIPS_MATURITY_HOURS` (6 h) before it, at `pool_end`:
+the daily draws on clips created 30 h to 6 h before the cutoff, so each clip
+has collected views for at least 6 h when the view filter and the ranking
+see it, and younger clips wait for the next day. Each distinct format
+window is fetched ending at `pool_end`: the day every day, and the 7 days as
+well when a weekly format runs, so the weekly ranking sees refreshed view
+counts. Each format selects only from its own window. Clip times are stored
+in UTC without an offset, so every window bound is converted to UTC before
+it reaches a query.
 """
 from __future__ import annotations
 
@@ -30,6 +34,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
+from app import config
 from app.clips import render as clip_render
 from app.clips.formats import SHORT_MAX_S, FormatSpec, formats_due_on
 from app.clips.metadata import assign_numbers, build_chapters, build_metadata
@@ -114,6 +119,7 @@ class EditionResult:
 class DailyReport:
     day: date
     window_end: datetime
+    pool_end: datetime | None = None  # newest clip creation time any window includes
     harvested: tuple[int, int] | None = None  # (inserted, updated)
     downloaded: int = 0
     classified: dict[str, int] = field(default_factory=dict)
@@ -322,17 +328,18 @@ def run_daily(
     deps = deps or Deps()
     specs = list(specs) if specs is not None else formats_due_on(day)
     profiles = list(profiles) if profiles is not None else load_all_profiles()
-    end = window_end(day, deps.now())
-    report = DailyReport(day=day, window_end=end)
+    cutoff = window_end(day, deps.now())
+    pool_end = cutoff - timedelta(hours=config.CLIPS_MATURITY_HOURS)
+    report = DailyReport(day=day, window_end=cutoff, pool_end=pool_end)
     if not specs:
         print(f"{_LOG_PREFIX} no format due on {day}")
         return report
 
     if not skip_harvest:
-        _harvest(session, end, {spec.window for spec in specs}, deps, report)
+        _harvest(session, pool_end, {spec.window for spec in specs}, deps, report)
 
     widest = max(spec.window for spec in specs)
-    ready = deps.download(session, _clips_in_window(session, end, widest))
+    ready = deps.download(session, _clips_in_window(session, pool_end, widest))
     report.downloaded = len(ready)
 
     if not skip_classify:
@@ -369,7 +376,7 @@ def run_daily(
             else:
                 to_render.append((existing, plan))
 
-        pool = [c for c in _clips_in_window(session, end, window) if c.id in ready_ids and c.id not in taken]
+        pool = [c for c in _clips_in_window(session, pool_end, window) if c.id in ready_ids and c.id not in taken]
         # plan_day reads the budget only for formats with a Short.
         budget = short_budget() if any(spec.has_short for spec in fresh) else SHORT_MAX_S
         for result in plan_day(pool, fresh, short_budget_s=budget):

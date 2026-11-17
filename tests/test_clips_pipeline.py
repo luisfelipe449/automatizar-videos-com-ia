@@ -41,7 +41,7 @@ def session(tmp_path):
         yield s
 
 
-def _candidates(n_top: int = 12, n_funny: int = 10, *, hours_ago: float = 3) -> list[CandidateClip]:
+def _candidates(n_top: int = 12, n_funny: int = 10, *, hours_ago: float = 10) -> list[CandidateClip]:
     made = END - timedelta(hours=hours_ago)
     out = []
     for i in range(n_top + n_funny):
@@ -170,8 +170,30 @@ def test_window_end_is_clamped_to_now():
     assert window_end(DAY, early) == early
 
 
-def test_harvest_asks_for_the_last_24_hours(session, tmp_path):
+MATURE = END - timedelta(hours=6)  # clips younger than 6 h wait for tomorrow
+
+
+def test_harvest_asks_for_the_day_ending_six_hours_before_the_cutoff(session, tmp_path):
     h = Harness(tmp_path)
+    report = h.run(session)
+    assert h.source.windows == [(MATURE - timedelta(hours=24), MATURE)]
+    assert report.pool_end == MATURE
+
+
+def test_clips_younger_than_the_maturity_wait_for_the_next_day(session, tmp_path):
+    h = Harness(tmp_path, candidates=_candidates(hours_ago=3))
+    report = h.run(session)
+    assert all(r.outcome == "skipped" for r in report.editions)
+
+
+def test_clips_up_to_thirty_hours_old_are_in_the_daily_pool(session, tmp_path):
+    report = Harness(tmp_path, candidates=_candidates(hours_ago=29)).run(session)
+    assert {r.format_key: r.outcome for r in report.editions}["top_daily"] == "rendered"
+
+
+def test_maturity_comes_from_config(monkeypatch, session, tmp_path):
+    monkeypatch.setattr("app.config.CLIPS_MATURITY_HOURS", 0.0)
+    h = Harness(tmp_path, candidates=_candidates(hours_ago=3))
     h.run(session)
     assert h.source.windows == [(END - timedelta(hours=24), END)]
 
@@ -182,7 +204,7 @@ def test_weekly_day_harvests_the_week_as_well(session, tmp_path):
     h = Harness(tmp_path)
     h.run(session, specs=[TOP, FUNNY, FORMATS["top10_weekly"]], dry_run=True)
     assert sorted(h.source.windows) == [
-        (END - timedelta(days=7), END), (END - timedelta(hours=24), END),
+        (MATURE - timedelta(days=7), MATURE), (MATURE - timedelta(hours=24), MATURE),
     ]
 
 
@@ -342,7 +364,7 @@ def test_insufficient_material_creates_no_edition(session, tmp_path):
 
 
 def test_clips_outside_the_window_are_ignored(session, tmp_path):
-    h = Harness(tmp_path, candidates=_candidates(hours_ago=30))
+    h = Harness(tmp_path, candidates=_candidates(hours_ago=31))
     report = h.run(session)
     assert all(r.outcome == "skipped" for r in report.editions)
 

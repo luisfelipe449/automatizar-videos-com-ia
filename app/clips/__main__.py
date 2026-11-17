@@ -48,7 +48,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def format_report(report: DailyReport, clip_names: dict[int, str]) -> str:
-    lines = [f"Day {report.day} (window ends {report.window_end:%Y-%m-%d %H:%M} UTC)"]
+    lines = [f"Day {report.day} (cutoff {report.window_end:%Y-%m-%d %H:%M} UTC; clips created up to "
+             f"{report.pool_end or report.window_end:%Y-%m-%d %H:%M} UTC)"]
     if report.harvested is not None:
         lines.append(f"  harvested: new={report.harvested[0]} updated={report.harvested[1]}")
     lines.append(f"  downloaded and ready: {report.downloaded}")

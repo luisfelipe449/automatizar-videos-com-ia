@@ -126,6 +126,10 @@ CLIPS_GAME_NAME: str = os.getenv("CLIPS_GAME_NAME", "Grand Theft Auto VI").strip
 # the classifier is the only per-clip cost, so this is the budget knob.
 CLIPS_MIN_VIEWS: int = int(os.getenv("CLIPS_MIN_VIEWS", "50"))
 CLIPS_MAX_CANDIDATES: int = int(os.getenv("CLIPS_MAX_CANDIDATES", "60"))
+# An edition draws on clips at least this many hours old at the 08:00 cutoff
+# (the daily: created 30 h to 6 h before it), so every clip has had time to
+# collect views before the view filter and the ranking see it.
+CLIPS_MATURITY_HOURS: float = float(os.getenv("CLIPS_MATURITY_HOURS", "6"))
 # The channels speak these languages (ISO 639-1, from the stream's language).
 # Clips in any other language rank with their score times the factor: at 0.5
 # a Spanish clip needs twice the views of an English one to place above it.

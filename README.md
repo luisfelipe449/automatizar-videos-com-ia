@@ -126,6 +126,12 @@ manual pelo YouTube Studio. Desenho completo:
 
 `coleta (Twitch Helix) → download (yt-dlp) → classificação (Gemini assiste o clip; Groq pelo título se a Gemini falhar) → seleção → render base → render por canal → aprovação no dashboard`
 
+- **Janela**: a edição do dia usa clips criados entre 30 h e 6 h antes das
+  08h de Brasília. As 6 h de folga (`CLIPS_MATURITY_HOURS`) dão tempo para
+  o clip juntar views antes do filtro e do ranking; os mais novos entram no
+  dia seguinte. Nos dias de semanal, a coleta também busca os 7 dias que
+  terminam no mesmo ponto, para atualizar as views.
+
 - **Seleção** (`app/clips/select.py`): Top ordena por views; Funny usa só
   `category=funny`, por `funny_score × log(1+views)`, com peso menor para
   clip que depende da fala. Nos dois, clip fora dos idiomas preferidos (en e

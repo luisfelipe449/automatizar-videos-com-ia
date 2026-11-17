@@ -76,7 +76,10 @@ funcionam sem entender a fala (`needs_speech=false`).
 ## Funil de clips
 
 1. **Coleta** (08h BRT, diária): Twitch Helix `Get Clips` por `game_id` do GTA
-   VI, últimas 24 h, com paginação. Pré-filtro por views.
+   VI, com paginação. Pré-filtro por views. A janela é de 24 h e termina 6 h
+   antes das 08h (clips criados entre 30 h e 6 h antes): todo clip tem pelo
+   menos 6 h para juntar views antes do filtro e do ranking, e os mais novos
+   ficam para o dia seguinte.
 2. **Download**: `yt-dlp` por clip (a Helix não dá URL de MP4).
 3. **Classificação**: Gemini Flash assiste uma proxy em 480p do clip e devolve
    `{category, funny_score, hype_score, needs_speech}`. Se a quota estourar ou
