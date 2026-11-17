@@ -35,13 +35,19 @@ from pathlib import Path
 from typing import Callable, Mapping, Protocol, Sequence
 
 from app.clips import fonts
-from app.clips.outro import _escape_path, _file_fingerprint
 from app.clips.formats import SHORT_MAX_S
+from app.clips.graph import blur_fill_9x16
 from app.clips.select import EditionPlan
 from app.config import ASSETS_DIR
-from app.services.render_service import _escape_drawtext
 from app.utils import cache
-from app.utils.ffmpeg_helpers import probe_duration, run_ffmpeg, run_ffmpeg_capture
+from app.utils.cache import file_fingerprint
+from app.utils.ffmpeg_helpers import (
+    escape_drawtext,
+    escape_filter_path,
+    probe_duration,
+    run_ffmpeg,
+    run_ffmpeg_capture,
+)
 
 XFADE_S = 0.3
 TITLE_CARD_S = 1.5
@@ -154,8 +160,8 @@ def credit_for(
 def _credit_graph(src_label: str, credit: Credit, lay: _CreditLayout, icon_input: int) -> tuple[str, list[str]]:
     """Graph from `[src_label]` to `[v]` drawing the credit; plus extra inputs."""
     text = (
-        f"drawtext=fontfile='{_escape_path(credit.font)}':expansion=none:"
-        f"text='{_escape_drawtext(credit.name)}':fontsize={lay.font_size}:fontcolor=white:"
+        f"drawtext=fontfile='{escape_filter_path(credit.font)}':expansion=none:"
+        f"text='{escape_drawtext(credit.name)}':fontsize={lay.font_size}:fontcolor=white:"
         f"borderw=3:bordercolor=black:box=1:boxcolor=black@0.5:boxborderw=12:"
         f"x={lay.x + lay.icon + 20}:y={lay.y}+({lay.icon}-text_h)/2"
     )
@@ -193,7 +199,7 @@ def _fit_video(duration: float) -> str:
 
 def build_segment_args(src: Path, dst: Path, *, duration: float, rank: int, credit: Credit) -> list[str]:
     """One clip as a 16:9 segment of exactly `duration` seconds."""
-    font = _escape_path(fonts.BRAND_FONT)
+    font = escape_filter_path(fonts.BRAND_FONT)
     badge = (
         f"drawtext=fontfile='{font}':expansion=none:text='#{rank}':fontsize=128:"
         f"fontcolor={_BADGE_COLOR}:borderw=6:bordercolor=black:x=48:y=36"
@@ -223,12 +229,7 @@ def build_short_base_args(
     keep = duration - (trim_start_s or 0.0)
     if keep <= 0:
         raise RenderError(f"trim of {trim_start_s} s leaves nothing of a {duration} s clip")
-    video = (
-        f"[0:v]fps={_FPS},{_fit_video(keep)},split[bgsrc][fgsrc];"
-        f"[bgsrc]scale=-2:1920,crop=1080:1920,boxblur=20:2[bg];"
-        f"[fgsrc]scale=1080:-2:flags=lanczos[fg];"
-        f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[base]"
-    )
+    video = blur_fill_9x16(f"[0:v]fps={_FPS},{_fit_video(keep)}", "format=yuv420p[base]")
     credit_graph, extra = _credit_graph("base", credit, _CREDIT_9X16, icon_input=1)
     # -ss before -i seeks the input; with re-encoding the cut is frame-accurate.
     seek = ["-ss", f"{trim_start_s:.3f}"] if trim_start_s else []
@@ -289,19 +290,37 @@ def _credit_key(credit: Credit) -> dict:
     return {
         "platform": credit.platform,
         "name": credit.name,
-        "icon": _file_fingerprint(credit.icon) if credit.icon else None,
+        "icon": file_fingerprint(credit.icon) if credit.icon else None,
         "font": str(credit.font),
     }
 
 
-def _render_cached(dst: Path, key: dict, build: Callable[[], list[str]], run: Callable[[list[str]], None]) -> str:
-    """Run `build()` unless `dst` is fresh for `key`. Returns the key's hash."""
+@dataclass(frozen=True)
+class _Cached:
+    key_hash: str  # what `dst.hash` holds; later outputs key on it
+    rendered: bool  # False when `dst` was fresh and reused
+
+
+def _render_cached(
+    dst: Path,
+    key: dict,
+    build: Callable[[], list[str]],
+    run: Callable[[list[str]], None],
+    *,
+    also_needs: Sequence[Path] = (),
+) -> _Cached:
+    """Run `build()` unless `dst` is fresh for `key` and every `also_needs` exists.
+
+    The only place an output's cache key is computed. `build` runs only on a
+    miss, so expensive inputs (probes) belong inside it.
+    """
     expected = cache.hash_text(json.dumps({"v": _GRAPH_VERSION, **key}, sort_keys=True))
     hash_path = dst.with_suffix(".hash")
-    if not cache.artifact_fresh(dst, hash_path, expected):
+    fresh = cache.artifact_fresh(dst, hash_path, expected) and all(p.is_file() for p in also_needs)
+    if not fresh:
         run(build())
         cache.write_hash_file(hash_path, expected)
-    return expected
+    return _Cached(expected, rendered=not fresh)
 
 
 def render_base(
@@ -333,29 +352,35 @@ def render_base(
         src = sources[item.clip_id]
         credit = credit_for(clips[item.clip_id], icons_dir=icons_dir, font_for=font_for)
         dst = edition_dir / f"seg_{item.position:02d}.mp4"
-        key = {"kind": "segment", "src": _file_fingerprint(src), "rank": item.rank,
+        key = {"kind": "segment", "src": file_fingerprint(src), "rank": item.rank,
                "credit": _credit_key(credit)}
         seg_hashes.append(_render_cached(
             dst, key,
             lambda src=src, dst=dst, item=item, credit=credit: build_segment_args(
                 src, dst, duration=probe(src), rank=item.rank, credit=credit),
             run,
-        ))
+        ).key_hash)
         segments.append(dst)
 
     base = edition_dir / "base_16x9.mp4"
     meta_path = edition_dir / "base.json"
-    concat_key = {"kind": "concat", "segments": seg_hashes, "xfade": XFADE_S}
-    expected = cache.hash_text(json.dumps({"v": _GRAPH_VERSION, **concat_key}, sort_keys=True))
-    if cache.artifact_fresh(base, base.with_suffix(".hash"), expected) and meta_path.is_file():
-        meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    else:
-        durations = [probe(seg) for seg in segments]
-        _render_cached(base, concat_key, lambda: build_concat_args(segments, durations, base), run)
+    durations: list[float] = []
+
+    def concat_args() -> list[str]:
+        durations.extend(probe(seg) for seg in segments)
+        return build_concat_args(segments, durations, base)
+
+    concat = _render_cached(
+        base, {"kind": "concat", "segments": seg_hashes, "xfade": XFADE_S},
+        concat_args, run, also_needs=(meta_path,),
+    )
+    if concat.rendered:
         offsets = xfade_offsets(durations)
         meta = {"offsets": offsets, "durations": durations,
                 "duration_s": offsets[-1] + durations[-1]}
         meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    else:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
 
     short_path = None
     short = plan.short
@@ -367,7 +392,7 @@ def render_base(
         # which can be a few hundredths shorter than the file. The Short keeps
         # the planned length and the clip's end; the seek absorbs the gap.
         planned_keep = short.duration_s - (short.trim_start_s or 0.0)
-        key = {"kind": "short", "src": _file_fingerprint(src), "trim": short.trim_start_s,
+        key = {"kind": "short", "src": file_fingerprint(src), "trim": short.trim_start_s,
                "keep": planned_keep, "credit": _credit_key(credit)}
 
         def short_args() -> list[str]:
@@ -389,7 +414,7 @@ def render_base(
         at = duration * 2 / 3 if at is None else min(at, max(0.0, duration - _RMS_WINDOW_S))
         return build_peak_frame_args(top_src, at, peak)
 
-    _render_cached(peak, {"kind": "peak", "src": _file_fingerprint(top_src)}, peak_args, run)
+    _render_cached(peak, {"kind": "peak", "src": file_fingerprint(top_src)}, peak_args, run)
 
     return BaseRender(
         base_16x9=base,
@@ -448,8 +473,8 @@ def _title_draw(title_file: Path, font_size: int, x: str, y: str, align: str = "
     # textfile: titles come from channel profiles and need no escaping there;
     # expansion=none keeps a literal "%" from being read as a directive.
     return (
-        f"drawtext=fontfile='{_escape_path(fonts.BRAND_FONT)}':"
-        f"textfile='{_escape_path(title_file)}':expansion=none:"
+        f"drawtext=fontfile='{escape_filter_path(fonts.BRAND_FONT)}':"
+        f"textfile='{escape_filter_path(title_file)}':expansion=none:"
         f"fontsize={font_size}:fontcolor=white:borderw=6:bordercolor=black:"
         f"line_spacing=10:text_align={align}:x={x}:y={y}"
     )
@@ -500,7 +525,7 @@ def build_thumbnail_args(frame: Path, *, title_file: Path, dst: Path) -> list[st
 
 def _input_hash(path: Path) -> str:
     """The cache hash a base output was rendered with, else its file fingerprint."""
-    return cache.read_hash_file(path.with_suffix(".hash")) or _file_fingerprint(path)
+    return cache.read_hash_file(path.with_suffix(".hash")) or file_fingerprint(path)
 
 
 def _write_title(lang_dir: Path, name: str, title: str, width: int) -> Path:
@@ -534,7 +559,7 @@ def render_language(
     _render_cached(
         medium,
         {"kind": "medium", "base": _input_hash(base.base_16x9),
-         "outro": _file_fingerprint(outro_16x9), "title": title},
+         "outro": file_fingerprint(outro_16x9), "title": title},
         lambda: build_medium_args(base.base_16x9, outro_16x9, title_file=card, dst=medium),
         run,
     )
@@ -551,7 +576,7 @@ def render_language(
         _render_cached(
             short,
             {"kind": "short", "base": _input_hash(base.base_9x16),
-             "outro": _file_fingerprint(outro_9x16), "title": title},
+             "outro": file_fingerprint(outro_9x16), "title": title},
             lambda: build_short_args(base.base_9x16, outro_9x16, title_file=band, dst=short),
             run,
         )

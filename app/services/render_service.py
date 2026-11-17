@@ -25,6 +25,8 @@ from app.config import ASSETS_DIR
 from app.models import RenderSpec, Scene
 from app.utils.ffmpeg_helpers import (
     FFmpegError,
+    escape_drawtext,
+    escape_filter_path,
     ffmpeg_bin,
     probe_duration,
     probe_resolution,
@@ -80,57 +82,6 @@ class RenderError(RuntimeError):
 # Pure helpers
 # --------------------------------------------------------------------------- #
 
-def _escape_subtitle_path(p: Path) -> str:
-    r"""Return an FFmpeg-safe representation of `p` for the `subtitles=` filter.
-
-    FFmpeg's filter-graph parser treats ``:`` as an argument separator and ``\``
-    as an escape introducer. On Windows the absolute path contains a drive
-    letter colon ("C:/..."), which must be escaped once for the filter parser.
-    We also normalise backslashes to forward slashes so libass is happy.
-
-    The returned string does NOT include the outer single quotes — the caller
-    wraps it in quotes when embedding in filter_complex.
-    """
-    # Use absolute, forward-slash form: "C:/Users/.../captions.ass".
-    posix = Path(p).resolve().as_posix()
-    # Escape the drive-letter colon for the filter parser: "C\:/Users/..."
-    # Only the first colon matters on Windows; POSIX paths have no colon.
-    return posix.replace(":", r"\:")
-
-
-def _escape_drawtext(text: str) -> str:
-    r"""Return a drawtext-safe representation of `text`.
-
-    Two layers of escaping apply when this string is inserted into
-    ``...text='<this>'...`` inside a filter_complex argument:
-
-    1. **Shell-like quoting layer**: single quotes wrap the value, so a
-       literal ``'`` must be written as ``'\''`` (close quote, escaped quote,
-       reopen quote). Do this FIRST, before any backslash mangling.
-    2. **Filter-arg layer**: ``:`` separates args, ``\`` is an escape char, and
-       ``%`` triggers drawtext's text-expansion. Escape each with a backslash.
-
-    Backslashes themselves are NOT doubled — drawtext reads the string after
-    the filter parser has consumed one level of backslash escapes, so passing
-    a raw ``\`` through would be interpreted as starting an escape sequence.
-    Whisper output is plain Latin text, so backslashes are extremely unlikely;
-    we still escape them as ``\\`` for safety.
-    """
-    # Order matters and is tricky:
-    # 1. Escape backslashes FIRST — before we inject our own.
-    # 2. Escape colon and percent for the filter-arg layer.
-    # 3. LAST: replace bare single quotes with the quote-toggle sequence
-    #    "'\\''". This has to come last because the replacement itself
-    #    contains a backslash that MUST NOT be re-escaped.
-    return (
-        text
-        .replace("\\", "\\\\")
-        .replace("%", "\\%")
-        .replace(":", "\\:")
-        .replace("'", "'\\''")
-    )
-
-
 def _build_rank_overlay(scene: Scene) -> str:
     """Return a drawtext filter fragment for the rank overlay, or ''.
 
@@ -146,10 +97,10 @@ def _build_rank_overlay(scene: Scene) -> str:
     if scene.rank is None:
         return ""
     text = f"{scene.rank} - {scene.rank_title}"
-    escaped = _escape_drawtext(text)
+    escaped = escape_drawtext(text)
     # The drawtext `fontfile=` arg accepts the same forward-slash + escaped
     # colon form that `subtitles=` uses on Windows, so we reuse the helper.
-    font = _escape_subtitle_path(_FONTS_DIR / "BebasNeue-Regular.ttf")
+    font = escape_filter_path(_FONTS_DIR / "BebasNeue-Regular.ttf")
     return (
         f",drawtext=fontfile='{font}':text='{escaped}':"
         f"fontcolor=white:fontsize=120:bordercolor=black:borderw=6:"
@@ -286,8 +237,8 @@ def _build_filter_graph(
             prev_label = out_label
         pre_subs_label = prev_label
 
-    sub_path = _escape_subtitle_path(spec.captions_path)
-    fonts_dir = _escape_subtitle_path(_FONTS_DIR)
+    sub_path = escape_filter_path(spec.captions_path)
+    fonts_dir = escape_filter_path(_FONTS_DIR)
     # Subtitles go AFTER the xfade chain so they render over the final timeline.
     # No `force_style=` here: the .ass file already carries its own Style block
     # (including the karaoke-colored PrimaryColour / SecondaryColour).

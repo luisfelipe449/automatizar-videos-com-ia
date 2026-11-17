@@ -16,6 +16,16 @@ def hash_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def file_fingerprint(path: Path) -> str:
+    """Identity of a file's current content for a cache key: path, size, mtime.
+
+    Cheaper than hashing the bytes of a large video; a rewrite of the file
+    changes its mtime and so its fingerprint.
+    """
+    stat = path.stat()
+    return f"{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
+
+
 def read_hash_file(path: Path) -> str | None:
     """Return the stored hash, or None if the file is absent."""
     if not path.exists():

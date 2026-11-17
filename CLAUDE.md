@@ -343,8 +343,12 @@ Scheduled by WSL cron (`*/30`) through `scripts/run_clips_daily.sh`; see
 - `Edition.numbers` maps channel profile key → episode number. Only
   approved editions count (`metadata.next_number`); numbers are frozen
   before render because they are drawn into the video.
-- Render outputs are cached by a hash of their inputs (`<file>.hash`). Bump
-  `render._GRAPH_VERSION` / `outro._GRAPH_VERSION` when a filter graph changes.
+- Render outputs are cached by a hash of their inputs (`<file>.hash`),
+  computed only in `render._render_cached` (and `render_outro`). Bump
+  `render._GRAPH_VERSION` / `outro._GRAPH_VERSION` when a filter graph
+  changes; `graph.blur_fill_9x16` feeds both, so a change there bumps both.
+  Filter escaping lives in `utils.ffmpeg_helpers` (`escape_filter_path`,
+  `escape_drawtext`), file fingerprints in `utils.cache.file_fingerprint`.
 - The Short budget is `SHORT_MAX_S` (59) minus the longest 9:16 outro and
   `pipeline.SHORT_SAFETY_S` (encoder rounding); the Short's clip loses its
   start, never its end. `render_base` keeps the planned length (reported

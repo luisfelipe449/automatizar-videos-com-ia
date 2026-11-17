@@ -24,8 +24,10 @@ from typing import Callable, Literal
 
 from app.config import ASSETS_DIR, CLIPS_DIR, INPUT_DIR
 from app.clips.profiles import ChannelProfile
+from app.clips.graph import blur_fill_9x16
 from app.utils import cache
-from app.utils.ffmpeg_helpers import probe_duration, run_ffmpeg
+from app.utils.cache import file_fingerprint
+from app.utils.ffmpeg_helpers import escape_filter_path, probe_duration, run_ffmpeg
 
 Aspect = Literal["16x9", "9x16"]
 
@@ -60,13 +62,8 @@ class OutroSource:
     delogo: DelogoBox | None
 
 
-def _escape_path(p: Path) -> str:
-    # Filter-graph form: forward slashes, drive colon escaped ("C\:/...").
-    return Path(p).resolve().as_posix().replace(":", r"\:")
-
-
 def build_placeholder_args(dst: Path) -> list[str]:
-    font = _escape_path(_FONT)
+    font = escape_filter_path(_FONT)
     return [
         "-y", "-f", "lavfi", "-i", f"color=c=0x0b1030:s=1280x720:r={_FPS}:d=5",
         "-vf",
@@ -132,7 +129,7 @@ def build_outro_args(
     dst: Path,
 ) -> list[str]:
     _, font_size, text_y = _TEXT[aspect]
-    font = _escape_path(_FONT)
+    font = escape_filter_path(_FONT)
     delogo = ""
     if source.delogo:
         b = source.delogo
@@ -142,7 +139,7 @@ def build_outro_args(
         f"trim=duration={duration:.3f},setpts=PTS-STARTPTS"
     )
     text = (
-        f"drawtext=fontfile='{font}':textfile='{_escape_path(cta_file)}':"
+        f"drawtext=fontfile='{font}':textfile='{escape_filter_path(cta_file)}':"
         f"fontsize={font_size}:fontcolor=white:borderw=5:bordercolor=black:"
         f"line_spacing=8:text_align=C:x=(w-text_w)/2:y={text_y}:"
         f"alpha='min(1,max(0,(t-{_CTA_DELAY_S - 0.3:.1f})/0.4))'"
@@ -150,12 +147,7 @@ def build_outro_args(
     if aspect == "16x9":
         video = f"{base},scale=1920:1080:flags=lanczos,setsar=1,{text}[v]"
     else:
-        video = (
-            f"{base},split[bgsrc][fgsrc];"
-            f"[bgsrc]scale=-2:1920,crop=1080:1920,boxblur=20:2[bg];"
-            f"[fgsrc]scale=1080:-2:flags=lanczos[fg];"
-            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,{text}[v]"
-        )
+        video = blur_fill_9x16(base, f"{text}[v]")
 
     # Every audio branch is padded AND trimmed to exactly `duration`, with
     # timestamps reset. An unbounded `apad` let ffmpeg run away with
@@ -200,11 +192,6 @@ def _synthesize_cta(text: str, key: str, voice: str) -> Path:
     return synthesize_narration(text, f"clips_cta_{key}", voice_name=voice)
 
 
-def _file_fingerprint(path: Path) -> str:
-    stat = path.stat()
-    return f"{path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
-
-
 def outro_path(profile_key: str, aspect: Aspect, *, work_dir: Path = CLIPS_DIR / "outro") -> Path:
     """Where `render_outro` writes the outro of this channel and aspect."""
     return work_dir / f"outro_{profile_key}_{aspect}.mp4"
@@ -235,11 +222,11 @@ def render_outro(
     hash_path = dst.with_suffix(".hash")
     fingerprint = json.dumps({
         "v": _GRAPH_VERSION,
-        "source": _file_fingerprint(source.path),
+        "source": file_fingerprint(source.path),
         "delogo": source.delogo.__dict__ if source.delogo else None,
         "cta": cta_text,
         "tts": hashlib.sha256(tts_wav.read_bytes()).hexdigest(),
-        "music": _file_fingerprint(music_path) if music_path else None,
+        "music": file_fingerprint(music_path) if music_path else None,
         "aspect": aspect,
     }, sort_keys=True)
     expected = cache.hash_text(fingerprint)

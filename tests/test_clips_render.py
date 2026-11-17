@@ -281,6 +281,19 @@ def test_render_base_rerenders_only_what_changed(tmp_path):
     assert [Path(c[-1]).name for c in again.calls] == ["seg_01.mp4", "base_16x9.mp4"]
 
 
+def test_render_base_rebuilds_concat_when_its_metadata_is_missing(tmp_path):
+    clips = _clips(tmp_path)
+    render_base(_plan(), clips, tmp_path / "ed", run=FakeFFmpeg(),
+                probe=_probe(PROBES), icons_dir=tmp_path, measure=lambda p: 1.0)
+    (tmp_path / "ed" / "base.json").unlink()
+    again = FakeFFmpeg()
+    out = render_base(_plan(), clips, tmp_path / "ed", run=again,
+                      probe=_probe(PROBES), icons_dir=tmp_path, measure=lambda p: 1.0)
+    assert [Path(c[-1]).name for c in again.calls] == ["base_16x9.mp4"]
+    assert out.offsets == pytest.approx((0.0, 9.7))
+    assert (tmp_path / "ed" / "base.json").is_file()
+
+
 def test_render_base_without_short(tmp_path):
     run = FakeFFmpeg()
     out = render_base(_plan(with_short=False), _clips(tmp_path), tmp_path / "ed", run=run,

@@ -21,13 +21,12 @@ from PIL import Image
 from app.models import RenderSpec, Scene
 from app.services import render_service
 from tests.ffmpeg_locator import find_ffmpeg
+from app.utils.ffmpeg_helpers import escape_drawtext, escape_filter_path
 from app.services.render_service import (
     RenderError,
     _build_ffmpeg_command,
     _build_filter_graph,
     _build_rank_overlay,
-    _escape_drawtext,
-    _escape_subtitle_path,
     _pick_music_track,
     _scale_scene_durations,
     _XFADE_DURATION,
@@ -89,13 +88,13 @@ def _make_spec(
 
 
 # --------------------------------------------------------------------------- #
-# Unit: _escape_subtitle_path
+# Unit: escape_filter_path
 # --------------------------------------------------------------------------- #
 
-def test_escape_subtitle_path_escapes_windows_drive_colon(tmp_path: Path):
+def test_escape_filter_path_escapes_windows_drive_colon(tmp_path: Path):
     ass = tmp_path / "captions.ass"
     ass.write_text("x", encoding="utf-8")
-    escaped = _escape_subtitle_path(ass)
+    escaped = escape_filter_path(ass)
 
     # No OS-native backslashes (the only legitimate backslash is the `\:`
     # drive-colon escape), and the filename uses forward slashes.
@@ -116,13 +115,13 @@ def test_escape_subtitle_path_escapes_windows_drive_colon(tmp_path: Path):
 
 
 # --------------------------------------------------------------------------- #
-# Unit: _escape_drawtext / _build_rank_overlay
+# Unit: escape_drawtext / _build_rank_overlay
 # --------------------------------------------------------------------------- #
 
 def test_escape_drawtext_handles_colons_quotes_backslashes():
     # Mix of every token drawtext cares about: single quote, colon, percent, backslash.
     raw = "O'Connor: 50% off\\test"
-    escaped = _escape_drawtext(raw)
+    escaped = escape_drawtext(raw)
 
     # Colon, percent, and backslash all get an escape.
     assert "\\:" in escaped
@@ -145,7 +144,7 @@ def test_escape_drawtext_apostrophe_regression():
     parser tripped on the orphan `s Hog-nosed Bat`. The fix uses the shell-
     style '\\'' toggle so the literal apostrophe survives intact.
     """
-    escaped = _escape_drawtext("Kitti's Hog-nosed Bat")
+    escaped = escape_drawtext("Kitti's Hog-nosed Bat")
     # Expected exact output: Kitti'\''s Hog-nosed Bat
     assert escaped == "Kitti'\\''s Hog-nosed Bat"
 
