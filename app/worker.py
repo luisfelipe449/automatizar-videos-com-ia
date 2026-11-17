@@ -16,6 +16,7 @@ from app.core.account_manager import AccountManager
 from app.core.job_queue import JobQueueManager
 from app.core.pipeline_runner import PipelineRunner
 from app.db.database import get_session
+from app.db.migrations import upgrade_schema
 from app.db.models import Account
 
 
@@ -69,6 +70,8 @@ def main() -> int:
     print(f"{tag} Starting job processor (one-per-account mode)")
     if not args.once:
         print(f"{tag} Press Ctrl+C to stop")
+
+    upgrade_schema()
 
     # Startup: validate + reset orphans. Short-lived session.
     with get_session() as session:

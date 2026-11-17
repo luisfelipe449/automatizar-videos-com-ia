@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
+from app.db.migrations import upgrade_schema
 from app.web.routes import dashboard, accounts, jobs, api
 
 
@@ -15,6 +16,8 @@ def create_app() -> FastAPI:
     Returns:
         Configured FastAPI application instance
     """
+    upgrade_schema()
+
     app = FastAPI(
         title="Video Automation Dashboard",
         description="Multi-account YouTube video automation system",
