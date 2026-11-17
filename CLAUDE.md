@@ -150,6 +150,11 @@ pytest -v tests/test_orchestrator.py
 pytest -v tests/test_models.py::test_script_validation
 ```
 
+The suite never touches `data/app.db`: `tests/conftest.py` points
+`DATABASE_URL` at a throwaway file before `app` is imported, and web tests
+build their app with `create_app(engine=<temp engine>)`, which runs the
+startup schema upgrade and binds every request to that engine.
+
 ## Key Concepts
 
 ### Idempotency and Caching

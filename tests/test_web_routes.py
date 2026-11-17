@@ -10,36 +10,36 @@ from app.web.main import create_app
 
 
 @pytest.fixture
-def client():
-    """Create test client with default app configuration.
+def engine(tmp_path):
+    """A fresh SQLite database with the full schema, private to one test."""
+    from app.db.database import Base, get_engine
 
-    Note: These tests use the default database configured in the app.
-    For isolated tests, consider using an in-memory database override.
-    """
-    app = create_app()
-    return TestClient(app)
+    eng = get_engine(f"sqlite:///{tmp_path / 'test.db'}")
+    Base.metadata.create_all(eng)
+    return eng
 
 
 @pytest.fixture
-def isolated_client(tmp_path, monkeypatch):
+def client(engine):
+    """Test client on an empty temp database (startup migration included)."""
+    return TestClient(create_app(engine=engine))
+
+
+@pytest.fixture
+def isolated_client(tmp_path, monkeypatch, engine):
     """Test client bound to a fresh SQLite DB with one active account.
 
     Overrides `get_db` so all route handlers (including the JobQueueManager
     dependency, which is `Depends(get_db)`) read/write the temp DB. Returns
     (TestClient, account_id) so tests can target that account directly.
     """
-    from app.db.database import Base, get_engine, get_session
+    from app.db.database import get_session
     from app.db.models import Account
-    from app.web.dependencies import get_db
 
     # Redirect filesystem writes (script.json etc.) into the tmp dir so
     # test runs don't pollute the repo's assets/ tree.
     monkeypatch.setattr("app.utils.filepaths.GENERATED_DIR", tmp_path / "generated")
     monkeypatch.setattr("app.utils.filepaths.RENDERED_DIR", tmp_path / "rendered")
-
-    db_path = tmp_path / "test.db"
-    engine = get_engine(f"sqlite:///{db_path}")
-    Base.metadata.create_all(engine)
 
     # Seed one active account with full quota.
     with get_session(engine) as seed_session:
@@ -58,21 +58,55 @@ def isolated_client(tmp_path, monkeypatch):
         seed_session.flush()
         account_id = account.id
 
-    def override_get_db():
-        with get_session(engine) as session:
-            yield session
+    return TestClient(create_app(engine=engine)), account_id
 
-    app = create_app()
-    app.dependency_overrides[get_db] = override_get_db
-    return TestClient(app), account_id
+
+class TestDatabaseIsolation:
+    """No test may touch the dashboard's real database, data/app.db."""
+
+    def test_default_engine_is_not_the_real_database(self):
+        from pathlib import Path
+
+        from app.db import database
+
+        real = Path(__file__).resolve().parent.parent / "data" / "app.db"
+        assert Path(database._engine.url.database).resolve() != real.resolve()
+
+    def test_create_app_migrates_the_given_engine(self, tmp_path):
+        from sqlalchemy import inspect, text
+
+        from app.db.database import get_engine
+
+        engine = get_engine(f"sqlite:///{tmp_path / 'old.db'}")
+        with engine.begin() as conn:  # an accounts table from before Clips mode
+            conn.execute(text("CREATE TABLE accounts (id INTEGER PRIMARY KEY, name VARCHAR(100))"))
+
+        create_app(engine=engine)
+
+        insp = inspect(engine)
+        assert "channel_profile" in {c["name"] for c in insp.get_columns("accounts")}
+        assert {"clips", "editions", "edition_clips"} <= set(insp.get_table_names())
+
+    def test_create_app_serves_requests_from_the_given_engine(self, tmp_path):
+        from app.db.database import Base, get_engine, get_session
+        from app.db.models import Account
+
+        engine = get_engine(f"sqlite:///{tmp_path / 'served.db'}")
+        Base.metadata.create_all(engine)
+        with get_session(engine) as s:
+            s.add(Account(name="OnlyInTempDb", email="t@example.com", client_id="c",
+                          client_secret="s", refresh_token="r",
+                          quota_reset_at=datetime.now(timezone.utc) + timedelta(hours=24)))
+        resp = TestClient(create_app(engine=engine)).get("/accounts")
+        assert resp.status_code == 200 and "OnlyInTempDb" in resp.text
 
 
 class TestAppStructure:
     """Tests for application structure and startup."""
 
-    def test_app_creation(self):
+    def test_app_creation(self, engine):
         """Test that the app can be created successfully."""
-        app = create_app()
+        app = create_app(engine=engine)
         assert app is not None
         assert app.title == "Video Automation Dashboard"
 
@@ -483,7 +517,7 @@ class TestCreateBatchEndpoint:
 # --------------------------------------------------------------------------- #
 
 @pytest.fixture
-def editions_client(tmp_path, monkeypatch):
+def editions_client(tmp_path, monkeypatch, engine):
     """Client on a temp DB with one rendered top_daily edition and its files.
 
     Returns (TestClient, edition_id, editions_dir).
@@ -491,15 +525,12 @@ def editions_client(tmp_path, monkeypatch):
     import json
     from datetime import date
 
-    from app.db.database import Base, get_engine, get_session
+    from app.db.database import get_session
     from app.db.models import Clip, Edition, EditionClip
-    from app.web.dependencies import get_db
 
     editions_dir = tmp_path / "editions"
     monkeypatch.setattr("app.clips.pipeline.EDITIONS_DIR", editions_dir)
 
-    engine = get_engine(f"sqlite:///{tmp_path / 'test.db'}")
-    Base.metadata.create_all(engine)
     with get_session(engine) as s:
         clips = [
             Clip(source="twitch", source_clip_id=f"c{i}", url=f"https://clips.twitch.tv/c{i}",
@@ -534,13 +565,7 @@ def editions_client(tmp_path, monkeypatch):
     (base / "status.json").write_text(json.dumps(
         {"stages": {"base": {"status": "done", "seconds": 12.3}}, "error": None}), encoding="utf-8")
 
-    def override_get_db():
-        with get_session(engine) as session:
-            yield session
-
-    app = create_app()
-    app.dependency_overrides[get_db] = override_get_db
-    return TestClient(app), edition_id, editions_dir, engine
+    return TestClient(create_app(engine=engine)), edition_id, editions_dir, engine
 
 
 class TestEditions:
