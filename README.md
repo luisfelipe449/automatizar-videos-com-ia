@@ -154,6 +154,7 @@ No `.env` (detalhes em `.env.example`):
 | `CLIPS_MIN_VIEWS`, `CLIPS_MAX_CANDIDATES` | Pré-filtro de views e teto de clips por coleta: é o controle de custo da classificação |
 | `CLIPS_PREFERRED_LANGUAGES`, `CLIPS_OTHER_LANGUAGE_FACTOR` | Idiomas preferidos (`en,pt`) e o fator da nota dos demais (`0.5`; `1.0` desliga a preferência) |
 | `CLIPS_CLASSIFIER_MODELS` | Modelos Gemini que assistem cada clip, em ordem |
+| `CLIPS_CLASSIFIER_MIN_INTERVAL_S` | Intervalo mínimo entre pedidos ao mesmo modelo (padrão 7 s), para caber no limite por minuto do free tier; 60 clips levam uns 7 min. `0` desliga |
 | `GEMINI_API_KEY` | Classificação e TTS do CTA. No free tier, gasta a cota diária da chave (esgotada, a classificação cai para o Groq); com faturamento ativo, cada clip classificado é cobrado |
 | `GROQ_API_KEY` | Classificação de reserva, só pelo título |
 

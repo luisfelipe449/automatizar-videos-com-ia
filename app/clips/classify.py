@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy.orm import Session
@@ -106,6 +107,36 @@ class TextJudge(Protocol):
     def judge(self, context: str) -> str: ...
 
 
+class RequestPacer:
+    """Keeps the starts of two requests to the same key `interval_s` apart.
+
+    Keys are model names: Gemini's per-minute limits are per model, so a
+    request to the next model in the chain does not wait for the first.
+    """
+
+    def __init__(
+        self,
+        interval_s: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self.interval_s = interval_s
+        self._clock = clock
+        self._sleep = sleep
+        self._last: dict[str, float] = {}
+
+    def wait(self, key: str) -> None:
+        if self.interval_s <= 0:
+            return
+        now = self._clock()
+        last = self._last.get(key)
+        if last is not None and now - last < self.interval_s:
+            self._sleep(self.interval_s - (now - last))
+            now = self._clock()
+        self._last[key] = now
+
+
 class GeminiJudge:
     """Tries each model in order; moves on when one is overloaded.
 
@@ -113,9 +144,13 @@ class GeminiJudge:
     on launch days and clear up on their own, so a busy model hands the clip
     to the next one instead of retrying it. A spent daily quota stops the
     whole chain. `last_model` names the model that produced the last answer.
+    Every request, the JSON-correction retry included, first waits on the
+    pacer for its model.
     """
 
-    def __init__(self, api_key: str, models: list[str], *, timeout_s: int = 60) -> None:
+    def __init__(
+        self, api_key: str, models: list[str], *, timeout_s: int = 60, min_interval_s: float = 0.0,
+    ) -> None:
         from google import genai
 
         if not models:
@@ -125,6 +160,7 @@ class GeminiJudge:
         self.model = self.models[0]
         self.last_model = self.model
         self._timeout_ms = timeout_s * 1000
+        self._pacer = RequestPacer(min_interval_s)
 
     def judge(self, video: bytes, context: str, correction: str | None = None) -> str:
         from google.genai import types
@@ -140,6 +176,7 @@ class GeminiJudge:
         contents = [types.Part.from_bytes(data=video, mime_type="video/mp4"), prompt]
         failures: list[str] = []
         for model in self.models:
+            self._pacer.wait(model)
             try:
                 response = self._client.models.generate_content(
                     model=model, contents=contents, config=config_,
@@ -189,7 +226,11 @@ class Classifier:
 
     @classmethod
     def from_env(cls) -> "Classifier":
-        gemini = GeminiJudge(config.require("GEMINI_API_KEY"), config.CLIPS_CLASSIFIER_MODELS)
+        gemini = GeminiJudge(
+            config.require("GEMINI_API_KEY"),
+            config.CLIPS_CLASSIFIER_MODELS,
+            min_interval_s=config.CLIPS_CLASSIFIER_MIN_INTERVAL_S,
+        )
         groq = GroqJudge(config.GROQ_API_KEY, config.GROQ_MODEL) if config.GROQ_API_KEY else None
         return cls(gemini, groq)
 

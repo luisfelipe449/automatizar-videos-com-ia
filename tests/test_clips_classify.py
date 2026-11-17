@@ -252,7 +252,16 @@ def _judge(outcomes: dict[str, object]):
     judge.last_model = judge.model
     judge._timeout_ms = 1000
     judge._client = type("C", (), {"models": _FakeModels(outcomes)})()
+    judge._pacer = RecordingPacer()
     return judge
+
+
+class RecordingPacer:
+    def __init__(self):
+        self.waited: list[str] = []
+
+    def wait(self, key: str) -> None:
+        self.waited.append(key)
 
 
 def test_overloaded_model_hands_over_to_next():
@@ -308,3 +317,79 @@ def test_classified_by_records_the_model_that_answered(session, tmp_path):
 
     assert stats == {"gemini": 1, "groq": 0, "failed": 0}
     assert clip.classified_by == "lite"
+
+
+# --------------------------------------------------------------------------- #
+# Request pacing (free-tier per-minute limits)
+# --------------------------------------------------------------------------- #
+
+class FakeClock:
+    def __init__(self):
+        self.now = 100.0
+        self.slept: list[float] = []
+
+    def clock(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(round(seconds, 3))
+        self.now += seconds
+
+
+def test_pacer_spaces_requests_to_the_same_model():
+    from app.clips.classify import RequestPacer
+
+    t = FakeClock()
+    pacer = RequestPacer(7.0, clock=t.clock, sleep=t.sleep)
+    pacer.wait("flash")          # first request: no wait
+    t.now += 2.0                 # the request took 2 s
+    pacer.wait("flash")          # 5 s left of the interval
+    t.now += 10.0
+    pacer.wait("flash")          # interval already passed
+    assert t.slept == [5.0]
+
+
+def test_pacer_keeps_models_independent():
+    from app.clips.classify import RequestPacer
+
+    t = FakeClock()
+    pacer = RequestPacer(7.0, clock=t.clock, sleep=t.sleep)
+    pacer.wait("flash")
+    pacer.wait("lite")           # other model, its own budget
+    assert t.slept == []
+    pacer.wait("flash")
+    assert t.slept == [7.0]
+
+
+def test_pacer_with_zero_interval_never_waits():
+    from app.clips.classify import RequestPacer
+
+    t = FakeClock()
+    pacer = RequestPacer(0.0, clock=t.clock, sleep=t.sleep)
+    for _ in range(5):
+        pacer.wait("flash")
+    assert t.slept == []
+
+
+def test_judge_waits_before_every_request_to_each_model():
+    judge = _judge({"flash": RuntimeError("503 UNAVAILABLE"), "lite": _verdict()})
+    judge.judge(b"v", "ctx")
+    judge.judge(b"v", "ctx")
+    assert judge._pacer.waited == ["flash", "lite", "flash", "lite"]
+
+
+def test_judge_builds_its_pacer_from_the_interval():
+    from app.clips.classify import GeminiJudge
+
+    judge = GeminiJudge("fake-key", ["flash"], min_interval_s=7.0)
+    assert judge._pacer.interval_s == 7.0
+
+
+def test_classifier_from_env_uses_configured_interval(monkeypatch):
+    from app.clips import classify
+
+    monkeypatch.setenv("GEMINI_API_KEY", "fake-key")
+    monkeypatch.setattr(classify.config, "CLIPS_CLASSIFIER_MIN_INTERVAL_S", 4.5)
+    monkeypatch.setattr(classify.config, "GROQ_API_KEY", "")
+    classifier = classify.Classifier.from_env()
+    assert classifier._gemini._pacer.interval_s == 4.5

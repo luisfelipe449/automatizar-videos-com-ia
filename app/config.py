@@ -139,6 +139,10 @@ CLIPS_OTHER_LANGUAGE_FACTOR: float = float(os.getenv("CLIPS_OTHER_LANGUAGE_FACTO
 # Gemini models tried in order for each clip; an overloaded (503/504) model
 # hands the clip to the next. Lite comes last: cheaper and less contended,
 # but a weaker judge of humour.
+# Minimum seconds between the starts of two requests to the same classifier
+# model. The free tier allows only a few requests per minute per model; 7 s
+# keeps one model under about 8.5. 0 disables the wait (billing on).
+CLIPS_CLASSIFIER_MIN_INTERVAL_S: float = float(os.getenv("CLIPS_CLASSIFIER_MIN_INTERVAL_S", "7"))
 CLIPS_CLASSIFIER_MODELS: list[str] = [
     m.strip()
     for m in os.getenv("CLIPS_CLASSIFIER_MODELS", "gemini-flash-latest,gemini-flash-lite-latest").split(",")

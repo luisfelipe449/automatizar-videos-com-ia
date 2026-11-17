@@ -370,9 +370,10 @@ Scheduled by WSL cron (`*/30`) through `scripts/run_clips_daily.sh`; see
 
 **Pitfalls**:
 - **Live Gemini calls spend the key's quota, or money once billing is on.**
-  On the free tier, per-minute and per-day limits apply: a per-minute 429
-  moves the clip to the next model, a per-day one sends the rest of the run
-  to Groq (title only). Tests mock every external call; announce before any
+  On the free tier, per-minute and per-day limits apply: `RequestPacer`
+  spaces requests to each model by `CLIPS_CLASSIFIER_MIN_INTERVAL_S` (7 s);
+  a per-minute 429 still moves the clip to the next model, and a per-day one
+  sends the rest of the run to Groq (title only). Tests mock every external call; announce before any
   live call.
 - The venv is Windows Python called from WSL. Shell variables reach it only
   when listed in `WSLENV` (`WSLENV=CLIPS_GAME_NAME CLIPS_GAME_NAME=... python.exe ...`).
