@@ -42,6 +42,9 @@ assets/generated/*
 assets/rendered/*
 !assets/rendered/.gitkeep
 
+# Clips mode: downloaded clips, proxies and rendered editions
+assets/clips/
+
 # assets/input is for ephemeral prompts; ignore contents but keep dir.
 assets/input/*
 !assets/input/.gitkeep
@@ -51,6 +54,9 @@ assets/input/*
 # ... and the versioned prompt templates referenced by SCRIPT_PROMPT_FILE /
 # ANGLES_PROMPT_FILE — those are source, not scratch.
 !assets/input/prompt-*.md
+# ... and clips-mode channel profiles and brand outros, which a fresh clone needs.
+!assets/input/channels/
+!assets/input/outro_*.mp4
 
 # -----------------------------------------------------------------------------
 # Database

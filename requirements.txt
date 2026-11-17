@@ -5,8 +5,9 @@ groq~=0.11
 # Only used when LLM_PROVIDER=bedrock. The [bedrock] extra pulls in boto3/botocore.
 anthropic[bedrock]>=0.97
 
-# Gemini (TTS primary; Imagen optional fallback for visuals)
-google-genai~=0.3
+# Gemini (TTS primary; Imagen optional fallback for visuals; clip classifier).
+# >=0.8 for Part.from_bytes video input and GenerateContentConfig.media_resolution.
+google-genai>=0.8,<1
 
 # YouTube Data API v3 + OAuth2
 google-api-python-client~=2.149
@@ -25,6 +26,9 @@ python-dotenv~=1.0
 # HTTP (Pollinations primary, generic requests)
 requests~=2.32
 httpx~=0.27
+
+# Clip download for clips mode — Twitch Helix exposes no MP4 URL.
+yt-dlp==2026.10.26
 
 # Image validation (visual_service output sanity + future resize needs)
 Pillow~=10.4

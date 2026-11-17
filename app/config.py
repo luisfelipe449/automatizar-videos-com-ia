@@ -115,6 +115,17 @@ YOUTUBE_VIDEO_LANGUAGE: str = (
 )
 
 # -----------------------------------------------------------------------------
+# Clips mode (app/clips). Twitch credentials are read lazily via `require`.
+# -----------------------------------------------------------------------------
+CLIPS_DIR: Path = ASSETS_DIR / "clips"
+CLIPS_GAME_NAME: str = os.getenv("CLIPS_GAME_NAME", "Grand Theft Auto VI").strip()
+# Clips under this view count are dropped before download/classification —
+# the classifier is the only per-clip cost, so this is the budget knob.
+CLIPS_MIN_VIEWS: int = int(os.getenv("CLIPS_MIN_VIEWS", "50"))
+CLIPS_MAX_CANDIDATES: int = int(os.getenv("CLIPS_MAX_CANDIDATES", "60"))
+CLIPS_CLASSIFIER_MODEL: str = os.getenv("CLIPS_CLASSIFIER_MODEL", "gemini-flash-latest").strip()
+
+# -----------------------------------------------------------------------------
 # Pipeline constants.
 # -----------------------------------------------------------------------------
 # Shorts must be <60s; 58s leaves a 2s buffer for fade-out.
